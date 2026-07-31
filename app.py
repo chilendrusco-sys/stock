@@ -535,6 +535,11 @@ try:
     if search_term or only_missing:
         st.caption("El filtro solo afecta lo que ves aquí; confirma tus ediciones antes de cambiarlo para no perder cambios sin guardar.")
 
+    # Reservan el orden visual (resumen antes que la tabla) aunque se rellenen más abajo,
+    # una vez que la tabla ya ha aplicado las ediciones del usuario.
+    kpi_placeholder = st.container()
+    table_placeholder = st.container()
+
     def _filter_view(df: pd.DataFrame) -> pd.DataFrame:
         if not search_term:
             return df
@@ -554,25 +559,26 @@ try:
         "importe": st.column_config.NumberColumn("importe", format="%.2f"),
     }
 
-    if not editable_view.empty:
-        edited_view = st.data_editor(
-            editable_view,
-            key=editor_key,
-            use_container_width=True,
-            disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
-            column_config=number_column_config,
-        )
-        edited_view["€/kg"] = pd.to_numeric(edited_view["€/kg"], errors="coerce")
-        edited_view["importe"] = edited_view["kg_stock"] * edited_view["€/kg"]
-        editable_df.update(edited_view)
-    elif search_term or only_missing:
-        st.caption("Ninguna fila sin precio coincide con el filtro actual.")
+    with table_placeholder:
+        if not editable_view.empty:
+            edited_view = st.data_editor(
+                editable_view,
+                key=editor_key,
+                use_container_width=True,
+                disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
+                column_config=number_column_config,
+            )
+            edited_view["€/kg"] = pd.to_numeric(edited_view["€/kg"], errors="coerce")
+            edited_view["importe"] = edited_view["kg_stock"] * edited_view["€/kg"]
+            editable_df.update(edited_view)
+        elif search_term or only_missing:
+            st.caption("Ninguna fila sin precio coincide con el filtro actual.")
 
-    if not locked_view.empty:
-        st.caption("Filas con precio ya asignado (bloqueadas):")
-        st.dataframe(locked_view, use_container_width=True, column_config=number_column_config)
-    elif not only_missing and search_term:
-        st.caption("Ninguna fila con precio coincide con el filtro actual.")
+        if not locked_view.empty:
+            st.caption("Filas con precio ya asignado (bloqueadas):")
+            st.dataframe(locked_view, use_container_width=True, column_config=number_column_config)
+        elif not only_missing and search_term:
+            st.caption("Ninguna fila con precio coincide con el filtro actual.")
 
     result = pd.concat([locked_df, editable_df]).sort_index()
 
@@ -580,46 +586,28 @@ try:
     total_kg = float(result["kg_stock"].sum()) if "kg_stock" in result.columns else 0.0
     sin_precio = int((result["€/kg"].isna() | (result["€/kg"] == 0)).sum())
 
-    st.markdown("### Resumen")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-label">Stock total</div>'
-            f'<div class="kpi-value">{total_kg:,.2f} kg</div></div>',
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-label">Valor total</div>'
-            f'<div class="kpi-value ok">{total_importe:,.2f} €</div></div>',
-            unsafe_allow_html=True,
-        )
-    with c3:
-        cls = "warn" if sin_precio else "ok"
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-label">Líneas sin precio</div>'
-            f'<div class="kpi-value {cls}">{sin_precio}</div></div>',
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("### 📊 Gráfico de valor")
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        top_articulos = (
-            result.groupby("articulo")["importe"].sum().sort_values(ascending=False).head(10)
-        )
-        if not top_articulos.empty:
-            st.caption("Top 10 artículos por valor (€)")
-            st.bar_chart(top_articulos, color="#B39DDB")
-        else:
-            st.caption("Sin datos suficientes para el gráfico de artículos.")
-    with chart_col2:
-        if result["almacen"].astype(str).str.strip().replace("", pd.NA).nunique(dropna=True) > 1:
-            por_almacen = result.groupby("almacen")["importe"].sum().sort_values(ascending=False)
-            st.caption("Valor por almacén (€)")
-            st.bar_chart(por_almacen, color="#A5D6C4")
-        else:
-            st.caption("Solo se detectó un almacén en este archivo.")
+    with kpi_placeholder:
+        st.markdown("### Resumen")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">Stock total</div>'
+                f'<div class="kpi-value">{total_kg:,.2f} kg</div></div>',
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">Valor total</div>'
+                f'<div class="kpi-value ok">{total_importe:,.2f} €</div></div>',
+                unsafe_allow_html=True,
+            )
+        with c3:
+            cls = "warn" if sin_precio else "ok"
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">Líneas sin precio</div>'
+                f'<div class="kpi-value {cls}">{sin_precio}</div></div>',
+                unsafe_allow_html=True,
+            )
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
