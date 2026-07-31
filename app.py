@@ -131,10 +131,11 @@ def find_column(df: pd.DataFrame, candidates: list[str]):
         if key in normalized_columns:
             return normalized_columns[key]
 
-    for col in df.columns:
-        col_norm = normalize_text(col)
-        for candidate in candidates:
-            cand_norm = normalize_text(candidate)
+    # El fallback respeta el orden de prioridad de candidates, no el orden de columnas del Excel.
+    for candidate in candidates:
+        cand_norm = normalize_text(candidate)
+        for col in df.columns:
+            col_norm = normalize_text(col)
             if cand_norm in col_norm or col_norm in cand_norm:
                 return col
     return None
@@ -152,7 +153,7 @@ ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo"
 # "LoteInterno" es el lote real. El "Nº de Serie"/SSCC identifica el bulto/palet, no el lote: se excluye a propósito.
 LOTE_CANDIDATES = ["loteinterno", "lote_interno", "lote interno", "lote", "lot", "batch", "numerodelote", "numlote"]
 # Variantes de "Nombre de Artículo" van antes que "descripcion" para no confundirlo con la descripción de especificación.
-DESC_CANDIDATES = ["nombrearticulo", "nombre_articulo", "nombre articulo", "nombredearticulo", "nombre de articulo", "nombre_de_articulo", "descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
+DESC_CANDIDATES = ["nombrearticulo", "nombre_articulo", "nombre articulo", "nombredearticulo", "nombre de articulo", "nombre_de_articulo", "nombredelarticulo", "nombre del articulo", "nombre_del_articulo", "descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
 # Candidatos de peso ordenados de más específico a más genérico para evitar confundir peso neto con peso bruto.
 QTY_CANDIDATES = [
     "pesoneto", "peso_neto", "peso neto", "netweight", "netweightkg",
