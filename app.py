@@ -1,5 +1,6 @@
 import re
 import unicodedata
+import uuid
 from io import BytesIO
 from pathlib import Path
 
@@ -137,8 +138,20 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_BASE_FILE = DATA_DIR / "base_stock.xlsx"
 DEFAULT_WAREHOUSE_FILE = DATA_DIR / "warehouse_sample.xlsx"
+SESSION_UPLOADS_DIR = BASE_DIR / "session_uploads"
+SESSION_UPLOADS_DIR.mkdir(exist_ok=True)
 
 ensure_sample_files()
+
+# session_state no sobrevive a un F5 (recarga completa); por eso el id de sesión
+# se guarda en la URL y el excel base se persiste en disco mientras la app siga viva.
+_sid = st.query_params.get("sid")
+if not _sid or not re.fullmatch(r"[0-9a-f]{32}", _sid):
+    _sid = uuid.uuid4().hex
+    st.query_params["sid"] = _sid
+SESSION_DIR = SESSION_UPLOADS_DIR / _sid
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
+SESSION_BASE_META = SESSION_DIR / "base_name.txt"
 
 
 def normalize_text(value) -> str:
@@ -341,14 +354,22 @@ with st.sidebar:
     base_file = st.file_uploader("Excel base", type=["xlsx", "xls"], label_visibility="collapsed")
 
     if base_file is not None:
-        st.session_state["base_file_bytes"] = base_file.getvalue()
-        st.session_state["base_file_name"] = base_file.name
+        suffix = Path(base_file.name).suffix or ".xlsx"
+        for old in SESSION_DIR.glob("base.*"):
+            old.unlink(missing_ok=True)
+        (SESSION_DIR / f"base{suffix}").write_bytes(base_file.getvalue())
+        SESSION_BASE_META.write_text(base_file.name, encoding="utf-8")
 
-    if "base_file_name" in st.session_state:
-        st.caption(f"✅ Base guardada en tu sesión: **{st.session_state['base_file_name']}**")
+    saved_base_candidates = list(SESSION_DIR.glob("base.*"))
+    saved_base_path = saved_base_candidates[0] if saved_base_candidates else None
+    saved_base_name = SESSION_BASE_META.read_text(encoding="utf-8").strip() if SESSION_BASE_META.exists() else None
+
+    if saved_base_path is not None:
+        st.caption(f"✅ Base guardada en tu sesión: **{saved_base_name or saved_base_path.name}**")
         if st.button("🗑️ Quitar base guardada", use_container_width=True):
-            st.session_state.pop("base_file_bytes", None)
-            st.session_state.pop("base_file_name", None)
+            for old in SESSION_DIR.glob("base.*"):
+                old.unlink(missing_ok=True)
+            SESSION_BASE_META.unlink(missing_ok=True)
             st.rerun()
 
     st.caption("Excel de almacén → artículos/lotes + stock en kg")
@@ -362,9 +383,8 @@ with st.sidebar:
 
 if base_file is not None:
     base_path = base_file
-elif "base_file_bytes" in st.session_state:
-    base_path = BytesIO(st.session_state["base_file_bytes"])
-    base_path.name = st.session_state["base_file_name"]
+elif saved_base_path is not None:
+    base_path = saved_base_path
 elif DEFAULT_BASE_FILE.exists():
     base_path = DEFAULT_BASE_FILE
 else:
