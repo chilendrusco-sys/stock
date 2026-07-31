@@ -399,7 +399,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("¿Cómo funciona esta valorización?", expanded=False):
+with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
     st.markdown(
         """
         **1. Excel base (precios)** — Contiene, para cada `artículo` (y opcionalmente `lote`), el precio **€/kg** vigente.
@@ -425,7 +425,7 @@ with st.expander("¿Cómo funciona esta valorización?", expanded=False):
 
 with st.sidebar:
     st.header("📂 Archivos")
-    st.caption("Excel base → precios €/kg (se actualiza mes a mes)")
+    st.caption("💰 Excel base → precios €/kg (se actualiza mes a mes)")
     base_file = st.file_uploader("Excel base", type=["xlsx", "xls"], label_visibility="collapsed")
 
     if base_file is not None:
@@ -447,7 +447,7 @@ with st.sidebar:
             CUSTOM_BASE_META.unlink(missing_ok=True)
             st.rerun()
 
-    st.caption("Excel de almacén → artículos/lotes + stock en kg")
+    st.caption("🏬 Excel de almacén → artículos/lotes + stock en kg")
     warehouse_file = st.file_uploader("Excel de almacén", type=["xlsx", "xls"], label_visibility="collapsed")
     st.markdown(
         '<div class="info-box">Si no subes archivos, se usan los ejemplos incluidos en la carpeta <code>data</code>.</div>',
@@ -484,7 +484,7 @@ try:
 
     warehouse_columns = detect_warehouse_columns(warehouse_df)
     warehouse_file_id = getattr(warehouse_path, "name", str(warehouse_path))
-    with st.expander("Columnas detectadas en el Excel de almacén", expanded=not warehouse_columns["kg_stock"]):
+    with st.expander("🗂️ Columnas detectadas en el Excel de almacén", expanded=not warehouse_columns["kg_stock"]):
         st.caption("Si la detección automática se equivoca, elige manualmente la columna correcta.")
         column_options = ["— Ninguna —"] + list(warehouse_df.columns)
 
@@ -515,14 +515,14 @@ try:
 
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
-    st.markdown("### Resultado (editable)")
-    st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
+    st.markdown("### 🧮 Resultado (editable)")
+    st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe aparece en el Resumen de arriba y en las descargas en cuanto guardas el precio (pulsa Enter o Tab).")
 
     result = result.reset_index(drop=True)
     needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
 
     if needs_review_mask.any():
-        st.warning(f"{int(needs_review_mask.sum())} línea(s) sin precio válido (vacío o 0). Edítalas abajo en la columna €/kg.")
+        st.warning(f"⚠️ {int(needs_review_mask.sum())} línea(s) sin precio válido (vacío o 0). Edítalas abajo en la columna €/kg.")
 
     locked_df = result[~needs_review_mask].copy()
     editable_df = result[needs_review_mask].copy()
@@ -556,47 +556,35 @@ try:
     number_column_config = {
         "kg_stock": st.column_config.NumberColumn("kg_stock", format="%.2f"),
         "€/kg": st.column_config.NumberColumn("€/kg", format="%.2f", step=0.01, min_value=0.0),
-        "importe": st.column_config.NumberColumn("importe", format="%.2f"),
+        "importe": st.column_config.NumberColumn("💶 importe", format="%.2f"),
     }
-
-    def _apply_price_and_importe(df: pd.DataFrame) -> pd.DataFrame:
-        df["€/kg"] = pd.to_numeric(df["€/kg"], errors="coerce")
-        negative_mask = df["€/kg"] < 0
-        if negative_mask.any():
-            st.warning(f"{int(negative_mask.sum())} precio(s) negativo(s) no son válidos y se han ignorado; esas filas siguen sin precio.")
-            df.loc[negative_mask, "€/kg"] = pd.NA
-        df["importe"] = df["kg_stock"] * df["€/kg"]
-        return df
-
-    # Reaplica ediciones ya guardadas por el data_editor para que el importe se vea
-    # actualizado al instante, en vez de esperar a la siguiente interacción.
-    persisted_edits = st.session_state.get(editor_key, {}).get("edited_rows", {})
-    if persisted_edits:
-        positions = list(editable_view.index)
-        for pos, changes in persisted_edits.items():
-            if "€/kg" in changes and pos < len(positions):
-                editable_view.loc[positions[pos], "€/kg"] = changes["€/kg"]
-        editable_view = _apply_price_and_importe(editable_view)
 
     with table_placeholder:
         if not editable_view.empty:
+            # La columna "importe" se calcula aparte: si se pasa al editor, éste la trata
+            # como parte de los datos originales y puede descartar el precio recién escrito.
             edited_view = st.data_editor(
-                editable_view,
+                editable_view.drop(columns=["importe"]),
                 key=editor_key,
                 use_container_width=True,
-                disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
+                disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock"],
                 column_config=number_column_config,
             )
-            edited_view = _apply_price_and_importe(edited_view)
+            edited_view["€/kg"] = pd.to_numeric(edited_view["€/kg"], errors="coerce")
+            negative_mask = edited_view["€/kg"] < 0
+            if negative_mask.any():
+                st.warning(f"⚠️ {int(negative_mask.sum())} precio(s) negativo(s) no son válidos y se han ignorado; esas filas siguen sin precio.")
+                edited_view.loc[negative_mask, "€/kg"] = pd.NA
             editable_df.update(edited_view)
+            editable_df["importe"] = editable_df["kg_stock"] * editable_df["€/kg"]
         elif search_term or only_missing:
-            st.caption("Ninguna fila sin precio coincide con el filtro actual.")
+            st.caption("🔎 Ninguna fila sin precio coincide con el filtro actual.")
 
         if not locked_view.empty:
-            st.caption("Filas con precio ya asignado (bloqueadas):")
+            st.caption("🔒 Filas con precio ya asignado (bloqueadas):")
             st.dataframe(locked_view, use_container_width=True, column_config=number_column_config)
         elif not only_missing and search_term:
-            st.caption("Ninguna fila con precio coincide con el filtro actual.")
+            st.caption("🔎 Ninguna fila con precio coincide con el filtro actual.")
 
     result = pd.concat([locked_df, editable_df]).sort_index()
 
@@ -605,24 +593,25 @@ try:
     sin_precio = int((result["€/kg"].isna() | (result["€/kg"] == 0)).sum())
 
     with kpi_placeholder:
-        st.markdown("### Resumen")
+        st.markdown("### 📊 Resumen")
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(
-                f'<div class="kpi-card"><div class="kpi-label">Stock total</div>'
+                f'<div class="kpi-card"><div class="kpi-label">📦 Stock total</div>'
                 f'<div class="kpi-value">{total_kg:,.2f} kg</div></div>',
                 unsafe_allow_html=True,
             )
         with c2:
             st.markdown(
-                f'<div class="kpi-card"><div class="kpi-label">Valor total</div>'
+                f'<div class="kpi-card"><div class="kpi-label">💶 Valor total</div>'
                 f'<div class="kpi-value ok">{total_importe:,.2f} €</div></div>',
                 unsafe_allow_html=True,
             )
         with c3:
             cls = "warn" if sin_precio else "ok"
+            icon = "⚠️" if sin_precio else "✅"
             st.markdown(
-                f'<div class="kpi-card"><div class="kpi-label">Líneas sin precio</div>'
+                f'<div class="kpi-card"><div class="kpi-label">{icon} Líneas sin precio</div>'
                 f'<div class="kpi-value {cls}">{sin_precio}</div></div>',
                 unsafe_allow_html=True,
             )
