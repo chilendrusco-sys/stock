@@ -151,7 +151,8 @@ def load_excel(path):
 ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"]
 # "LoteInterno" es el lote real. El "Nº de Serie"/SSCC identifica el bulto/palet, no el lote: se excluye a propósito.
 LOTE_CANDIDATES = ["loteinterno", "lote_interno", "lote interno", "lote", "lot", "batch", "numerodelote", "numlote"]
-DESC_CANDIDATES = ["nombrearticulo", "nombre_articulo", "nombre articulo", "descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
+# Variantes de "Nombre de Artículo" van antes que "descripcion" para no confundirlo con la descripción de especificación.
+DESC_CANDIDATES = ["nombrearticulo", "nombre_articulo", "nombre articulo", "nombredearticulo", "nombre de articulo", "nombre_de_articulo", "descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
 # Candidatos de peso ordenados de más específico a más genérico para evitar confundir peso neto con peso bruto.
 QTY_CANDIDATES = [
     "pesoneto", "peso_neto", "peso neto", "netweight", "netweightkg",
@@ -348,24 +349,37 @@ try:
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
     st.markdown("### Resultado (editable)")
-    st.caption("Puedes corregir manualmente el €/kg de las filas marcadas (precio 0 o vacío). El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
+    st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
 
-    needs_review = result["€/kg"].isna() | (result["€/kg"] == 0)
-    if needs_review.any():
-        st.warning(f"{int(needs_review.sum())} línea(s) sin precio válido (vacío o 0). Edítalas directamente en la columna €/kg de la tabla.")
+    result = result.reset_index(drop=True)
+    needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
 
-    edited = st.data_editor(
-        result,
-        key=editor_key,
-        use_container_width=True,
-        disabled=["articulo", "descripcion", "lote", "kg_stock", "importe"],
-        column_config={
-            "€/kg": st.column_config.NumberColumn("€/kg", format="%.4f", step=0.01),
-        },
-    )
-    edited["€/kg"] = pd.to_numeric(edited["€/kg"], errors="coerce")
-    edited["importe"] = edited["kg_stock"] * edited["€/kg"]
-    result = edited
+    if needs_review_mask.any():
+        st.warning(f"{int(needs_review_mask.sum())} línea(s) sin precio válido (vacío o 0). Edítalas abajo en la columna €/kg.")
+
+    locked_df = result[~needs_review_mask].copy()
+    editable_df = result[needs_review_mask].copy()
+
+    if not editable_df.empty:
+        edited_rows = st.data_editor(
+            editable_df,
+            key=editor_key,
+            use_container_width=True,
+            disabled=["articulo", "descripcion", "lote", "kg_stock", "importe"],
+            column_config={
+                "€/kg": st.column_config.NumberColumn("€/kg", format="%.4f", step=0.01),
+            },
+        )
+        edited_rows["€/kg"] = pd.to_numeric(edited_rows["€/kg"], errors="coerce")
+        edited_rows["importe"] = edited_rows["kg_stock"] * edited_rows["€/kg"]
+    else:
+        edited_rows = editable_df
+
+    if not locked_df.empty:
+        st.caption("Filas con precio ya asignado (bloqueadas):")
+        st.dataframe(locked_df, use_container_width=True)
+
+    result = pd.concat([locked_df, edited_rows]).sort_index()
 
     total_importe = float(result["importe"].sum()) if "importe" in result.columns else 0.0
     total_kg = float(result["kg_stock"].sum()) if "kg_stock" in result.columns else 0.0
