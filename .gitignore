@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 cloudflared.exe
 .streamlit/secrets.toml
-session_uploads/
+data/custom_base.*
+data/custom_base_name.txt
