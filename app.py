@@ -151,7 +151,7 @@ def load_excel(path):
 ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"]
 # "LoteInterno" es el lote real. El "Nº de Serie"/SSCC identifica el bulto/palet, no el lote: se excluye a propósito.
 LOTE_CANDIDATES = ["loteinterno", "lote_interno", "lote interno", "lote", "lot", "batch", "numerodelote", "numlote"]
-DESC_CANDIDATES = ["descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
+DESC_CANDIDATES = ["nombrearticulo", "nombre_articulo", "nombre articulo", "descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
 # Candidatos de peso ordenados de más específico a más genérico para evitar confundir peso neto con peso bruto.
 QTY_CANDIDATES = [
     "pesoneto", "peso_neto", "peso neto", "netweight", "netweightkg",
@@ -345,9 +345,31 @@ try:
     warehouse_ready = prepare_warehouse_dataframe(warehouse_df, warehouse_columns)
     result = valorate_stock(base_ready, warehouse_ready)
 
+    editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
+
+    st.markdown("### Resultado (editable)")
+    st.caption("Puedes corregir manualmente el €/kg de las filas marcadas (precio 0 o vacío). El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
+
+    needs_review = result["€/kg"].isna() | (result["€/kg"] == 0)
+    if needs_review.any():
+        st.warning(f"{int(needs_review.sum())} línea(s) sin precio válido (vacío o 0). Edítalas directamente en la columna €/kg de la tabla.")
+
+    edited = st.data_editor(
+        result,
+        key=editor_key,
+        use_container_width=True,
+        disabled=["articulo", "descripcion", "lote", "kg_stock", "importe"],
+        column_config={
+            "€/kg": st.column_config.NumberColumn("€/kg", format="%.4f", step=0.01),
+        },
+    )
+    edited["€/kg"] = pd.to_numeric(edited["€/kg"], errors="coerce")
+    edited["importe"] = edited["kg_stock"] * edited["€/kg"]
+    result = edited
+
     total_importe = float(result["importe"].sum()) if "importe" in result.columns else 0.0
     total_kg = float(result["kg_stock"].sum()) if "kg_stock" in result.columns else 0.0
-    sin_precio = int(result["€/kg"].isna().sum())
+    sin_precio = int((result["€/kg"].isna() | (result["€/kg"] == 0)).sum())
 
     st.markdown("### Resumen")
     c1, c2, c3 = st.columns(3)
@@ -370,15 +392,6 @@ try:
             f'<div class="kpi-value {cls}">{sin_precio}</div></div>',
             unsafe_allow_html=True,
         )
-
-    st.markdown("### Resultado")
-    if sin_precio:
-        st.warning(f"{sin_precio} línea(s) del almacén no encontraron precio en el Excel base. Revísalas abajo (€/kg vacío).")
-
-    def _highlight_missing(row):
-        return ["background-color: rgba(244, 184, 96, 0.18)" if pd.isna(row["€/kg"]) else "" for _ in row]
-
-    st.dataframe(result.style.apply(_highlight_missing, axis=1), use_container_width=True)
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
