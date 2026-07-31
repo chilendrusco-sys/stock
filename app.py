@@ -149,6 +149,7 @@ def load_excel(path):
         return pd.read_excel(path)
 
 
+ALMACEN_CANDIDATES = ["almacen", "nombrealmacen", "almacen_nombre", "nombre almacen", "warehouse", "deposito", "centro", "planta", "ubicacion"]
 ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"]
 # "LoteInterno" es el lote real. El "Nº de Serie"/SSCC identifica el bulto/palet, no el lote: se excluye a propósito.
 LOTE_CANDIDATES = ["loteinterno", "lote_interno", "lote interno", "lote", "lot", "batch", "numerodelote", "numlote"]
@@ -190,6 +191,7 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 def detect_warehouse_columns(df: pd.DataFrame) -> dict:
     return {
+        "almacen": find_column(df, ALMACEN_CANDIDATES),
         "articulo": find_column(df, ITEM_CANDIDATES),
         "lote": find_column(df, LOTE_CANDIDATES),
         "descripcion": find_column(df, DESC_CANDIDATES),
@@ -198,6 +200,7 @@ def detect_warehouse_columns(df: pd.DataFrame) -> dict:
 
 
 def prepare_warehouse_dataframe(df: pd.DataFrame, columns: dict) -> pd.DataFrame:
+    almacen_col = columns.get("almacen")
     item_col = columns["articulo"]
     lote_col = columns["lote"]
     desc_col = columns["descripcion"]
@@ -211,6 +214,8 @@ def prepare_warehouse_dataframe(df: pd.DataFrame, columns: dict) -> pd.DataFrame
         keep_cols.append(lote_col)
     if desc_col:
         keep_cols.append(desc_col)
+    if almacen_col:
+        keep_cols.append(almacen_col)
 
     warehouse = df[keep_cols].copy()
     rename_map = {item_col: "articulo", qty_col: "kg_stock"}
@@ -218,22 +223,27 @@ def prepare_warehouse_dataframe(df: pd.DataFrame, columns: dict) -> pd.DataFrame
         rename_map[lote_col] = "lote"
     if desc_col:
         rename_map[desc_col] = "descripcion"
+    if almacen_col:
+        rename_map[almacen_col] = "almacen"
     warehouse = warehouse.rename(columns=rename_map)
 
     if "lote" not in warehouse.columns:
         warehouse["lote"] = ""
     if "descripcion" not in warehouse.columns:
         warehouse["descripcion"] = ""
+    if "almacen" not in warehouse.columns:
+        warehouse["almacen"] = ""
 
     warehouse["articulo"] = warehouse["articulo"].fillna("")
     warehouse["lote"] = warehouse["lote"].fillna("")
     warehouse["descripcion"] = warehouse["descripcion"].fillna("")
+    warehouse["almacen"] = warehouse["almacen"].fillna("")
     warehouse["kg_stock"] = pd.to_numeric(warehouse["kg_stock"], errors="coerce").fillna(0)
     warehouse["articulo_key"] = warehouse["articulo"].apply(normalize_text)
     warehouse["lote_key"] = warehouse["lote"].apply(normalize_text)
     warehouse["match_key"] = warehouse["articulo_key"] + "|" + warehouse["lote_key"]
     warehouse["match_key_item"] = warehouse["articulo_key"]
-    return warehouse[["articulo", "descripcion", "lote", "kg_stock", "match_key", "match_key_item"]]
+    return warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "match_key", "match_key_item"]]
 
 
 def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.DataFrame:
@@ -260,7 +270,7 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
 
     warehouse["€/kg"] = pd.to_numeric(warehouse["€/kg"], errors="coerce")
     warehouse["importe"] = pd.to_numeric(warehouse["importe"], errors="coerce")
-    return warehouse[["articulo", "descripcion", "lote", "kg_stock", "€/kg", "importe"]]
+    return warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "€/kg", "importe"]]
 
 
 st.markdown(
@@ -335,6 +345,7 @@ try:
     with st.expander("Columnas detectadas en el Excel de almacén", expanded=not warehouse_columns["kg_stock"]):
         st.write(
             {
+                "Almacén": warehouse_columns["almacen"] or "— no detectada (opcional)",
                 "Artículo": warehouse_columns["articulo"] or "⚠️ no detectada",
                 "Descripción": warehouse_columns["descripcion"] or "— no detectada (opcional)",
                 "Lote": warehouse_columns["lote"] or "— no detectada (opcional)",
@@ -349,8 +360,11 @@ try:
 
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
-    st.markdown("### Resultado (editable)")
-    st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
+    header_col, download_col = st.columns([5, 2])
+    with header_col:
+        st.markdown("### Resultado (editable)")
+        st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
+    download_placeholder = download_col.empty()
 
     result = result.reset_index(drop=True)
     needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
@@ -366,7 +380,7 @@ try:
             editable_df,
             key=editor_key,
             use_container_width=True,
-            disabled=["articulo", "descripcion", "lote", "kg_stock", "importe"],
+            disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
             column_config={
                 "€/kg": st.column_config.NumberColumn("€/kg", format="%.4f", step=0.01),
             },
@@ -413,10 +427,16 @@ try:
         result.to_excel(writer, index=False, sheet_name="resultado")
     output.seek(0)
 
-    st.download_button(
-        label="Descargar resultado en Excel",
+    almacen_values = result["almacen"].astype(str).str.strip()
+    almacen_values = almacen_values[almacen_values != ""]
+    almacen_name = almacen_values.iloc[0] if not almacen_values.empty else ""
+    safe_almacen = re.sub(r'[<>:"/\\|?*]', "", almacen_name).strip()
+    file_name = f"resultado_valoracion_{safe_almacen}.xlsx" if safe_almacen else "resultado_valoracion.xlsx"
+
+    download_placeholder.download_button(
+        label="⬇️ Descargar Excel",
         data=output.getvalue(),
-        file_name="resultado_valoracion.xlsx",
+        file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 except Exception as exc:
