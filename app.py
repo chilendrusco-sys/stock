@@ -40,42 +40,42 @@ st.markdown(
     """
     <style>
     [data-testid="stAppViewContainer"] {
-        background: radial-gradient(circle at 10% 0%, #F3EEFB 0%, #EAF7F1 45%, #FDEEE4 100%);
+        background: radial-gradient(circle at 10% 0%, #16233A 0%, #0F172A 45%, #0B1220 100%);
     }
     [data-testid="stSidebar"] {
-        background: #F5F1FB;
-        border-right: 1px solid #E2D6F5;
+        background: #0B1220;
+        border-right: 1px solid #1E293B;
     }
     [data-testid="stHeader"] { background: rgba(0,0,0,0); }
     .hero {
-        background: linear-gradient(120deg, #E9DFF9 0%, #DDF3E9 50%, #FCE7D6 100%);
-        border: 1px solid #E3D6F6;
+        background: linear-gradient(120deg, #16233A 0%, #10231C 60%, #0F172A 100%);
+        border: 1px solid #22334A;
         border-radius: 18px;
         padding: 22px 26px;
         margin-bottom: 18px;
-        box-shadow: 0 6px 18px rgba(155, 135, 196, 0.15);
+        box-shadow: 0 6px 18px rgba(59, 130, 246, 0.15);
     }
     .hero-title {
         font-size: 2rem;
         font-weight: 800;
-        color: #4A4458;
+        color: #E2E8F0;
         margin-bottom: 4px;
     }
     .hero-subtitle {
-        color: #6b6478;
+        color: #94A3B8;
         font-size: 0.98rem;
     }
     .kpi-card {
-        background: #ffffff;
-        border: 1px solid #ECE3F8;
-        border-left: 5px solid #C7B6E8;
+        background: #131C2E;
+        border: 1px solid #22334A;
+        border-left: 5px solid #3B82F6;
         border-radius: 14px;
         padding: 16px 18px;
         height: 100%;
-        box-shadow: 0 4px 12px rgba(155, 135, 196, 0.10);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
     }
     .kpi-label {
-        color: #8b7fa0;
+        color: #94A3B8;
         font-size: 0.8rem;
         font-weight: 700;
         text-transform: uppercase;
@@ -83,37 +83,37 @@ st.markdown(
         margin-bottom: 6px;
     }
     .kpi-value {
-        color: #4A4458;
+        color: #E2E8F0;
         font-size: 1.6rem;
         font-weight: 800;
     }
-    .kpi-value.warn { color: #E0A45D; }
-    .kpi-value.ok { color: #4FAE8A; }
+    .kpi-value.warn { color: #F59E0B; }
+    .kpi-value.ok { color: #34D399; }
     .info-box {
-        background: #EAF7F1;
-        border: 1px solid #BFE6D4;
+        background: #0F2A22;
+        border: 1px solid #1E4B3B;
         border-radius: 12px;
         padding: 14px 16px;
-        color: #35604c;
+        color: #6EE7B7;
         font-size: 0.9rem;
     }
     section[data-testid="stFileUploaderDropzone"] {
-        background: #FBF9FE;
-        border: 1px dashed #C7B6E8;
+        background: #0F172A;
+        border: 1px dashed #3B82F6;
         border-radius: 12px;
     }
     [data-testid="stDataFrame"] {
-        border: 1px solid #ECE3F8;
+        border: 1px solid #22334A;
         border-radius: 12px;
     }
-    h3 { color: #4A4458 !important; }
+    h3 { color: #E2E8F0 !important; }
     [data-testid="stSidebar"] .block-container {
         padding-top: 1.1rem;
     }
     [data-testid="stSidebar"] h2 {
         font-size: 1.05rem;
         margin-bottom: 2px;
-        color: #4A4458;
+        color: #E2E8F0;
     }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
         font-size: 0.78rem;
@@ -139,25 +139,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-def _get_app_password():
-    try:
-        return st.secrets.get("APP_PASSWORD")
-    except Exception:
-        return None
-
-
-_APP_PASSWORD = _get_app_password()
-if _APP_PASSWORD and not st.session_state.get("_authenticated"):
-    st.markdown("### 🔒 Acceso restringido")
-    _pw = st.text_input("Contraseña", type="password", key="_pw_attempt")
-    if _pw:
-        if _pw == _APP_PASSWORD:
-            st.session_state["_authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta.")
-    st.stop()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
