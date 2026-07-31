@@ -1,10 +1,12 @@
 import re
 import unicodedata
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from fpdf import FPDF
 
 
 def _needs_regeneration(path: Path) -> bool:
@@ -38,39 +40,42 @@ st.markdown(
     """
     <style>
     [data-testid="stAppViewContainer"] {
-        background: radial-gradient(circle at 15% 0%, #1c2333 0%, #11151f 55%, #0c0f17 100%);
+        background: radial-gradient(circle at 10% 0%, #F3EEFB 0%, #EAF7F1 45%, #FDEEE4 100%);
     }
     [data-testid="stSidebar"] {
-        background: #131722;
-        border-right: 1px solid #262d3f;
+        background: #F5F1FB;
+        border-right: 1px solid #E2D6F5;
     }
     [data-testid="stHeader"] { background: rgba(0,0,0,0); }
     .hero {
-        background: linear-gradient(120deg, #1b2436 0%, #222c42 100%);
-        border: 1px solid #34405c;
-        border-radius: 16px;
+        background: linear-gradient(120deg, #E9DFF9 0%, #DDF3E9 50%, #FCE7D6 100%);
+        border: 1px solid #E3D6F6;
+        border-radius: 18px;
         padding: 22px 26px;
         margin-bottom: 18px;
+        box-shadow: 0 6px 18px rgba(155, 135, 196, 0.15);
     }
     .hero-title {
         font-size: 2rem;
         font-weight: 800;
-        color: #f5f7fb;
+        color: #4A4458;
         margin-bottom: 4px;
     }
     .hero-subtitle {
-        color: #aab4c8;
+        color: #6b6478;
         font-size: 0.98rem;
     }
     .kpi-card {
-        background: #171c2a;
-        border: 1px solid #2c3650;
+        background: #ffffff;
+        border: 1px solid #ECE3F8;
+        border-left: 5px solid #C7B6E8;
         border-radius: 14px;
         padding: 16px 18px;
         height: 100%;
+        box-shadow: 0 4px 12px rgba(155, 135, 196, 0.10);
     }
     .kpi-label {
-        color: #8b96b3;
+        color: #8b7fa0;
         font-size: 0.8rem;
         font-weight: 700;
         text-transform: uppercase;
@@ -78,36 +83,37 @@ st.markdown(
         margin-bottom: 6px;
     }
     .kpi-value {
-        color: #f5f7fb;
+        color: #4A4458;
         font-size: 1.6rem;
         font-weight: 800;
     }
-    .kpi-value.warn { color: #f4b860; }
-    .kpi-value.ok { color: #5fd68e; }
+    .kpi-value.warn { color: #E0A45D; }
+    .kpi-value.ok { color: #4FAE8A; }
     .info-box {
-        background: #16233a;
-        border: 1px solid #2c4a75;
+        background: #EAF7F1;
+        border: 1px solid #BFE6D4;
         border-radius: 12px;
         padding: 14px 16px;
-        color: #d7e3f7;
+        color: #35604c;
         font-size: 0.9rem;
     }
     section[data-testid="stFileUploaderDropzone"] {
-        background: #1a1f2e;
-        border: 1px dashed #3a4560;
+        background: #FBF9FE;
+        border: 1px dashed #C7B6E8;
         border-radius: 12px;
     }
     [data-testid="stDataFrame"] {
-        border: 1px solid #2c3650;
+        border: 1px solid #ECE3F8;
         border-radius: 12px;
     }
-    h3 { color: #f5f7fb !important; }
+    h3 { color: #4A4458 !important; }
     [data-testid="stSidebar"] .block-container {
         padding-top: 1.1rem;
     }
     [data-testid="stSidebar"] h2 {
         font-size: 1.05rem;
         margin-bottom: 2px;
+        color: #4A4458;
     }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
         font-size: 0.78rem;
@@ -132,6 +138,26 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+def _get_app_password():
+    try:
+        return st.secrets.get("APP_PASSWORD")
+    except Exception:
+        return None
+
+
+_APP_PASSWORD = _get_app_password()
+if _APP_PASSWORD and not st.session_state.get("_authenticated"):
+    st.markdown("### 🔒 Acceso restringido")
+    _pw = st.text_input("Contraseña", type="password", key="_pw_attempt")
+    if _pw:
+        if _pw == _APP_PASSWORD:
+            st.session_state["_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+    st.stop()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -300,6 +326,70 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
     return warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "€/kg", "importe"]]
 
 
+def _pdf_safe(text) -> str:
+    text = "" if text is None else str(text)
+    text = text.replace("€", "EUR")
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def build_pdf_report(result_df: pd.DataFrame, almacen_name: str, total_kg: float, total_importe: float, sin_precio: int) -> bytes:
+    col_widths = {
+        "almacen": 28,
+        "articulo": 38,
+        "descripcion": 55,
+        "lote": 25,
+        "kg_stock": 22,
+        "€/kg": 20,
+        "importe": 24,
+    }
+    headers = ["Almacén", "Artículo", "Descripción", "Lote", "kg_stock", "€/kg", "Importe"]
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+
+    def _print_header():
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, _pdf_safe("Informe de valorización de stock"), ln=1)
+        pdf.set_font("Helvetica", "", 10)
+        if almacen_name:
+            pdf.cell(0, 6, _pdf_safe(f"Almacén: {almacen_name}"), ln=1)
+        pdf.cell(0, 6, _pdf_safe(f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"), ln=1)
+        pdf.cell(
+            0, 6,
+            _pdf_safe(
+                f"Stock total: {total_kg:,.2f} kg   |   Valor total: {total_importe:,.2f} EUR   |   Líneas sin precio: {sin_precio}"
+            ),
+            ln=1,
+        )
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 9)
+        for header, key in zip(headers, col_widths):
+            pdf.cell(col_widths[key], 8, _pdf_safe(header), border=1)
+        pdf.ln(8)
+        pdf.set_font("Helvetica", "", 8)
+
+    _print_header()
+
+    for _, row in result_df.iterrows():
+        if pdf.get_y() > 185:
+            pdf.add_page()
+            _print_header()
+        pdf.cell(col_widths["almacen"], 7, _pdf_safe(row.get("almacen", ""))[:18], border=1)
+        pdf.cell(col_widths["articulo"], 7, _pdf_safe(row.get("articulo", ""))[:24], border=1)
+        pdf.cell(col_widths["descripcion"], 7, _pdf_safe(row.get("descripcion", ""))[:36], border=1)
+        pdf.cell(col_widths["lote"], 7, _pdf_safe(row.get("lote", ""))[:16], border=1)
+        kg_val = row.get("kg_stock")
+        pdf.cell(col_widths["kg_stock"], 7, _pdf_safe(f"{kg_val:,.2f}" if pd.notna(kg_val) else ""), border=1, align="R")
+        precio_val = row.get("€/kg")
+        pdf.cell(col_widths["€/kg"], 7, _pdf_safe(f"{precio_val:,.2f}" if pd.notna(precio_val) else "—"), border=1, align="R")
+        importe_val = row.get("importe")
+        pdf.cell(col_widths["importe"], 7, _pdf_safe(f"{importe_val:,.2f}" if pd.notna(importe_val) else "—"), border=1, align="R")
+        pdf.ln(7)
+
+    return bytes(pdf.output())
+
+
 st.markdown(
     """
     <div class="hero">
@@ -368,6 +458,7 @@ with st.sidebar:
     )
     st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
     download_placeholder = st.empty()
+    pdf_placeholder = st.empty()
 
 if base_file is not None:
     base_path = base_file
@@ -395,21 +486,35 @@ try:
     warehouse_df = load_excel(warehouse_path)
 
     warehouse_columns = detect_warehouse_columns(warehouse_df)
+    warehouse_file_id = getattr(warehouse_path, "name", str(warehouse_path))
     with st.expander("Columnas detectadas en el Excel de almacén", expanded=not warehouse_columns["kg_stock"]):
-        st.write(
-            {
-                "Almacén": warehouse_columns["almacen"] or "— no detectada (opcional)",
-                "Artículo": warehouse_columns["articulo"] or "⚠️ no detectada",
-                "Descripción": warehouse_columns["descripcion"] or "— no detectada (opcional)",
-                "Lote": warehouse_columns["lote"] or "— no detectada (opcional)",
-                "Peso/Cantidad (kg)": warehouse_columns["kg_stock"] or "⚠️ no detectada",
-            }
-        )
+        st.caption("Si la detección automática se equivoca, elige manualmente la columna correcta.")
+        column_options = ["— Ninguna —"] + list(warehouse_df.columns)
+
+        def _column_selector(label, field, required=False):
+            detected = warehouse_columns[field]
+            default_index = column_options.index(detected) if detected in column_options else 0
+            choice = st.selectbox(
+                label + (" *" if required else ""),
+                column_options,
+                index=default_index,
+                key=f"colsel_{field}_{warehouse_file_id}",
+            )
+            return None if choice == "— Ninguna —" else choice
+
+        warehouse_columns = {
+            "almacen": _column_selector("Almacén", "almacen"),
+            "articulo": _column_selector("Artículo", "articulo", required=True),
+            "descripcion": _column_selector("Descripción", "descripcion"),
+            "lote": _column_selector("Lote", "lote"),
+            "kg_stock": _column_selector("Peso/Cantidad (kg)", "kg_stock", required=True),
+        }
         st.caption("Columnas originales del archivo: " + ", ".join(str(c) for c in warehouse_df.columns))
 
-    base_ready = prepare_base_dataframe(base_df)
-    warehouse_ready = prepare_warehouse_dataframe(warehouse_df, warehouse_columns)
-    result = valorate_stock(base_ready, warehouse_ready)
+    with st.spinner("Procesando archivos y calculando valorización..."):
+        base_ready = prepare_base_dataframe(base_df)
+        warehouse_ready = prepare_warehouse_dataframe(warehouse_df, warehouse_columns)
+        result = valorate_stock(base_ready, warehouse_ready)
 
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
@@ -425,30 +530,54 @@ try:
     locked_df = result[~needs_review_mask].copy()
     editable_df = result[needs_review_mask].copy()
 
+    search_col, filter_col = st.columns([3, 2])
+    with search_col:
+        search_term = st.text_input("🔍 Buscar", placeholder="Filtra por artículo, descripción, lote o almacén...")
+    with filter_col:
+        only_missing = st.checkbox("Mostrar solo filas sin precio")
+    if search_term or only_missing:
+        st.caption("El filtro solo afecta lo que ves aquí; confirma tus ediciones antes de cambiarlo para no perder cambios sin guardar.")
+
+    def _filter_view(df: pd.DataFrame) -> pd.DataFrame:
+        if not search_term:
+            return df
+        term_norm = normalize_text(search_term)
+        mask = pd.Series(False, index=df.index)
+        for col in ["articulo", "descripcion", "lote", "almacen"]:
+            if col in df.columns:
+                mask = mask | df[col].apply(normalize_text).str.contains(term_norm, na=False)
+        return df[mask]
+
+    locked_view = _filter_view(locked_df) if not only_missing else locked_df.iloc[0:0]
+    editable_view = _filter_view(editable_df)
+
     number_column_config = {
         "kg_stock": st.column_config.NumberColumn("kg_stock", format="%.2f"),
         "€/kg": st.column_config.NumberColumn("€/kg", format="%.2f", step=0.01),
         "importe": st.column_config.NumberColumn("importe", format="%.2f"),
     }
 
-    if not editable_df.empty:
-        edited_rows = st.data_editor(
-            editable_df,
+    if not editable_view.empty:
+        edited_view = st.data_editor(
+            editable_view,
             key=editor_key,
             use_container_width=True,
             disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
             column_config=number_column_config,
         )
-        edited_rows["€/kg"] = pd.to_numeric(edited_rows["€/kg"], errors="coerce")
-        edited_rows["importe"] = edited_rows["kg_stock"] * edited_rows["€/kg"]
-    else:
-        edited_rows = editable_df
+        edited_view["€/kg"] = pd.to_numeric(edited_view["€/kg"], errors="coerce")
+        edited_view["importe"] = edited_view["kg_stock"] * edited_view["€/kg"]
+        editable_df.update(edited_view)
+    elif search_term or only_missing:
+        st.caption("Ninguna fila sin precio coincide con el filtro actual.")
 
-    if not locked_df.empty:
+    if not locked_view.empty:
         st.caption("Filas con precio ya asignado (bloqueadas):")
-        st.dataframe(locked_df, use_container_width=True, column_config=number_column_config)
+        st.dataframe(locked_view, use_container_width=True, column_config=number_column_config)
+    elif not only_missing and search_term:
+        st.caption("Ninguna fila con precio coincide con el filtro actual.")
 
-    result = pd.concat([locked_df, edited_rows]).sort_index()
+    result = pd.concat([locked_df, editable_df]).sort_index()
 
     total_importe = float(result["importe"].sum()) if "importe" in result.columns else 0.0
     total_kg = float(result["kg_stock"].sum()) if "kg_stock" in result.columns else 0.0
@@ -476,6 +605,25 @@ try:
             unsafe_allow_html=True,
         )
 
+    st.markdown("### 📊 Gráfico de valor")
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        top_articulos = (
+            result.groupby("articulo")["importe"].sum().sort_values(ascending=False).head(10)
+        )
+        if not top_articulos.empty:
+            st.caption("Top 10 artículos por valor (€)")
+            st.bar_chart(top_articulos, color="#B39DDB")
+        else:
+            st.caption("Sin datos suficientes para el gráfico de artículos.")
+    with chart_col2:
+        if result["almacen"].astype(str).str.strip().replace("", pd.NA).nunique(dropna=True) > 1:
+            por_almacen = result.groupby("almacen")["importe"].sum().sort_values(ascending=False)
+            st.caption("Valor por almacén (€)")
+            st.bar_chart(por_almacen, color="#A5D6C4")
+        else:
+            st.caption("Solo se detectó un almacén en este archivo.")
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         result.to_excel(writer, index=False, sheet_name="resultado")
@@ -492,6 +640,15 @@ try:
         data=output.getvalue(),
         file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    pdf_bytes = build_pdf_report(result, almacen_name, total_kg, total_importe, sin_precio)
+    pdf_file_name = f"informe_valoracion_{safe_almacen}.pdf" if safe_almacen else "informe_valoracion.pdf"
+    pdf_placeholder.download_button(
+        label="🧾 Descargar informe PDF",
+        data=pdf_bytes,
+        file_name=pdf_file_name,
+        mime="application/pdf",
     )
 except Exception as exc:
     st.error(f"No se pudo procesar el archivo: {exc}")
