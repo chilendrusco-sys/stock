@@ -149,7 +149,8 @@ def load_excel(path):
 
 
 ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"]
-LOTE_CANDIDATES = ["lote", "lot", "batch", "numerodelote", "numlote", "serie"]
+# "LoteInterno" es el lote real. El "Nº de Serie"/SSCC identifica el bulto/palet, no el lote: se excluye a propósito.
+LOTE_CANDIDATES = ["loteinterno", "lote_interno", "lote interno", "lote", "lot", "batch", "numerodelote", "numlote"]
 DESC_CANDIDATES = ["descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
 # Candidatos de peso ordenados de más específico a más genérico para evitar confundir peso neto con peso bruto.
 QTY_CANDIDATES = [
@@ -290,6 +291,9 @@ with st.expander("¿Cómo funciona esta valorización?", expanded=False):
         (almacén + precio + importe) que puedes descargar en Excel; el archivo de almacén original queda intacto.
 
         Si un artículo/lote del almacén no aparece en el Excel base, el precio queda vacío y se marca para que lo revises.
+
+        > **Nota sobre Lote vs Nº de Serie/SSCC**: el `LoteInterno` es el lote real usado para el cruce de precios.
+        > El Nº de Serie/SSCC identifica el bulto o palet físico, no el lote, así que se ignora en la valorización.
         """
     )
 
