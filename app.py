@@ -148,9 +148,20 @@ def load_excel(path):
         return pd.read_excel(path)
 
 
+ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"]
+LOTE_CANDIDATES = ["lote", "lot", "batch", "numerodelote", "numlote", "serie"]
+DESC_CANDIDATES = ["descripcion", "denominacion", "nombre", "detalle", "desc", "descripciónarticulo", "textobreve"]
+# Candidatos de peso ordenados de más específico a más genérico para evitar confundir peso neto con peso bruto.
+QTY_CANDIDATES = [
+    "pesoneto", "peso_neto", "peso neto", "netweight", "netweightkg",
+    "kgstock", "stockkg", "cantidadkg", "cantkg", "kilos", "kilogramos",
+    "kg", "cantidad", "stock", "qty", "unidades",
+]
+
+
 def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    item_col = find_column(df, ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"])
-    lote_col = find_column(df, ["lote", "lot", "batch", "numerodelote", "numlote", "serie"])
+    item_col = find_column(df, ITEM_CANDIDATES)
+    lote_col = find_column(df, LOTE_CANDIDATES)
     price_col = find_column(df, ["€/kg", "eurokg", "euro_kg", "precio_kg", "coste_kg", "porkg", "pricekg", "priceperkg", "precio"])
 
     if not item_col or not price_col:
@@ -174,29 +185,52 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return base[["articulo", "lote", "€/kg", "match_key", "match_key_item"]].drop_duplicates(subset=["match_key"], keep="first")
 
 
-def prepare_warehouse_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    item_col = find_column(df, ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"])
-    lote_col = find_column(df, ["lote", "lot", "batch", "numerodelote", "numlote", "serie"])
-    qty_col = find_column(df, ["kg", "kg_stock", "stockkg", "cantidadkg", "cantkg", "stock", "cantidad", "qty", "unidades"])
+def detect_warehouse_columns(df: pd.DataFrame) -> dict:
+    return {
+        "articulo": find_column(df, ITEM_CANDIDATES),
+        "lote": find_column(df, LOTE_CANDIDATES),
+        "descripcion": find_column(df, DESC_CANDIDATES),
+        "kg_stock": find_column(df, QTY_CANDIDATES),
+    }
+
+
+def prepare_warehouse_dataframe(df: pd.DataFrame, columns: dict) -> pd.DataFrame:
+    item_col = columns["articulo"]
+    lote_col = columns["lote"]
+    desc_col = columns["descripcion"]
+    qty_col = columns["kg_stock"]
 
     if not item_col or not qty_col:
-        raise ValueError("El Excel de almacén debe tener al menos una columna de artículo y una de cantidad/stock.")
+        raise ValueError("El Excel de almacén debe tener al menos una columna de artículo y una de peso/cantidad (kg, peso neto...).")
 
-    warehouse = df[[item_col, lote_col, qty_col]].copy() if lote_col else df[[item_col, qty_col]].copy()
-    warehouse = warehouse.rename(columns={item_col: "articulo", qty_col: "kg_stock"})
+    keep_cols = [item_col, qty_col]
     if lote_col:
-        warehouse = warehouse.rename(columns={lote_col: "lote"})
-    else:
+        keep_cols.append(lote_col)
+    if desc_col:
+        keep_cols.append(desc_col)
+
+    warehouse = df[keep_cols].copy()
+    rename_map = {item_col: "articulo", qty_col: "kg_stock"}
+    if lote_col:
+        rename_map[lote_col] = "lote"
+    if desc_col:
+        rename_map[desc_col] = "descripcion"
+    warehouse = warehouse.rename(columns=rename_map)
+
+    if "lote" not in warehouse.columns:
         warehouse["lote"] = ""
+    if "descripcion" not in warehouse.columns:
+        warehouse["descripcion"] = ""
 
     warehouse["articulo"] = warehouse["articulo"].fillna("")
     warehouse["lote"] = warehouse["lote"].fillna("")
+    warehouse["descripcion"] = warehouse["descripcion"].fillna("")
     warehouse["kg_stock"] = pd.to_numeric(warehouse["kg_stock"], errors="coerce").fillna(0)
     warehouse["articulo_key"] = warehouse["articulo"].apply(normalize_text)
     warehouse["lote_key"] = warehouse["lote"].apply(normalize_text)
     warehouse["match_key"] = warehouse["articulo_key"] + "|" + warehouse["lote_key"]
     warehouse["match_key_item"] = warehouse["articulo_key"]
-    return warehouse[["articulo", "lote", "kg_stock", "match_key", "match_key_item"]]
+    return warehouse[["articulo", "descripcion", "lote", "kg_stock", "match_key", "match_key_item"]]
 
 
 def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.DataFrame:
@@ -223,7 +257,7 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
 
     warehouse["€/kg"] = pd.to_numeric(warehouse["€/kg"], errors="coerce")
     warehouse["importe"] = pd.to_numeric(warehouse["importe"], errors="coerce")
-    return warehouse[["articulo", "lote", "kg_stock", "€/kg", "importe"]]
+    return warehouse[["articulo", "descripcion", "lote", "kg_stock", "€/kg", "importe"]]
 
 
 st.markdown(
@@ -291,8 +325,20 @@ try:
     base_df = load_excel(base_path)
     warehouse_df = load_excel(warehouse_path)
 
+    warehouse_columns = detect_warehouse_columns(warehouse_df)
+    with st.expander("Columnas detectadas en el Excel de almacén", expanded=not warehouse_columns["kg_stock"]):
+        st.write(
+            {
+                "Artículo": warehouse_columns["articulo"] or "⚠️ no detectada",
+                "Descripción": warehouse_columns["descripcion"] or "— no detectada (opcional)",
+                "Lote": warehouse_columns["lote"] or "— no detectada (opcional)",
+                "Peso/Cantidad (kg)": warehouse_columns["kg_stock"] or "⚠️ no detectada",
+            }
+        )
+        st.caption("Columnas originales del archivo: " + ", ".join(str(c) for c in warehouse_df.columns))
+
     base_ready = prepare_base_dataframe(base_df)
-    warehouse_ready = prepare_warehouse_dataframe(warehouse_df)
+    warehouse_ready = prepare_warehouse_dataframe(warehouse_df, warehouse_columns)
     result = valorate_stock(base_ready, warehouse_ready)
 
     total_importe = float(result["importe"].sum()) if "importe" in result.columns else 0.0
