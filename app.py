@@ -555,9 +555,28 @@ try:
 
     number_column_config = {
         "kg_stock": st.column_config.NumberColumn("kg_stock", format="%.2f"),
-        "€/kg": st.column_config.NumberColumn("€/kg", format="%.2f", step=0.01),
+        "€/kg": st.column_config.NumberColumn("€/kg", format="%.2f", step=0.01, min_value=0.0),
         "importe": st.column_config.NumberColumn("importe", format="%.2f"),
     }
+
+    def _apply_price_and_importe(df: pd.DataFrame) -> pd.DataFrame:
+        df["€/kg"] = pd.to_numeric(df["€/kg"], errors="coerce")
+        negative_mask = df["€/kg"] < 0
+        if negative_mask.any():
+            st.warning(f"{int(negative_mask.sum())} precio(s) negativo(s) no son válidos y se han ignorado; esas filas siguen sin precio.")
+            df.loc[negative_mask, "€/kg"] = pd.NA
+        df["importe"] = df["kg_stock"] * df["€/kg"]
+        return df
+
+    # Reaplica ediciones ya guardadas por el data_editor para que el importe se vea
+    # actualizado al instante, en vez de esperar a la siguiente interacción.
+    persisted_edits = st.session_state.get(editor_key, {}).get("edited_rows", {})
+    if persisted_edits:
+        positions = list(editable_view.index)
+        for pos, changes in persisted_edits.items():
+            if "€/kg" in changes and pos < len(positions):
+                editable_view.loc[positions[pos], "€/kg"] = changes["€/kg"]
+        editable_view = _apply_price_and_importe(editable_view)
 
     with table_placeholder:
         if not editable_view.empty:
@@ -568,8 +587,7 @@ try:
                 disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
                 column_config=number_column_config,
             )
-            edited_view["€/kg"] = pd.to_numeric(edited_view["€/kg"], errors="coerce")
-            edited_view["importe"] = edited_view["kg_stock"] * edited_view["€/kg"]
+            edited_view = _apply_price_and_importe(edited_view)
             editable_df.update(edited_view)
         elif search_term or only_missing:
             st.caption("Ninguna fila sin precio coincide con el filtro actual.")
@@ -608,6 +626,7 @@ try:
                 f'<div class="kpi-value {cls}">{sin_precio}</div></div>',
                 unsafe_allow_html=True,
             )
+        st.markdown("<div style='margin-bottom: 26px;'></div>", unsafe_allow_html=True)
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
