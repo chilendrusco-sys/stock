@@ -220,16 +220,25 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     base["lote_key"] = base["lote"].apply(normalize_text)
     base["match_key"] = base["articulo_key"] + "|" + base["lote_key"]
     base["match_key_item"] = base["articulo_key"]
-    return base[["articulo", "lote", "€/kg", "match_key", "match_key_item"]].drop_duplicates(subset=["match_key"], keep="first")
+    return base[["articulo", "lote", "€/kg", "match_key", "match_key_item", "lote_key"]].drop_duplicates(subset=["match_key"], keep="first")
 
 
 def detect_warehouse_columns(df: pd.DataFrame) -> dict:
+    used_columns = set()
+
+    def _pick(candidates):
+        col = find_column(df, candidates)
+        if col is None or col in used_columns:
+            return None
+        used_columns.add(col)
+        return col
+
     return {
-        "almacen": find_column(df, ALMACEN_CANDIDATES),
-        "articulo": find_column(df, ITEM_CANDIDATES),
-        "lote": find_column(df, LOTE_CANDIDATES),
-        "descripcion": find_column(df, DESC_CANDIDATES),
-        "kg_stock": find_column(df, QTY_CANDIDATES),
+        "almacen": _pick(ALMACEN_CANDIDATES),
+        "articulo": _pick(ITEM_CANDIDATES),
+        "lote": _pick(LOTE_CANDIDATES),
+        "descripcion": _pick(DESC_CANDIDATES),
+        "kg_stock": _pick(QTY_CANDIDATES),
     }
 
 
@@ -282,6 +291,13 @@ def prepare_warehouse_dataframe(df: pd.DataFrame, columns: dict) -> pd.DataFrame
 
 def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.DataFrame:
     base_lookup = base_df.set_index("match_key")
+    # Artículos para los que el Excel base NO especifica lote: el precio se aplica a cualquier lote de ese artículo.
+    # Si el base sí tiene lotes concretos para un artículo, un lote del almacén que no aparezca ahí queda sin precio (no se adivina).
+    base_no_lote = (
+        base_df[base_df["lote_key"] == ""]
+        .drop_duplicates(subset=["match_key_item"], keep="first")
+        .set_index("match_key_item")["€/kg"]
+    )
     warehouse = warehouse_df.copy()
 
     warehouse["€/kg"] = None
@@ -290,9 +306,8 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
     for idx, row in warehouse.iterrows():
         if row["match_key"] in base_lookup.index:
             price = base_lookup.loc[row["match_key"], "€/kg"]
-        elif row["match_key_item"] in base_lookup["match_key_item"].values:
-            item_matches = base_lookup[base_lookup["match_key_item"] == row["match_key_item"]]
-            price = item_matches["€/kg"].iloc[0]
+        elif row["match_key_item"] in base_no_lote.index:
+            price = base_no_lote.loc[row["match_key_item"]]
         else:
             price = None
 
@@ -393,9 +408,10 @@ with st.expander("¿Cómo funciona esta valorización?", expanded=False):
         **2. Excel de almacén (stock)** — Contiene los `artículo`/`lote` con su cantidad en **kg**. Este archivo
         **no se modifica**: se lee tal cual, sin tocar sus cantidades ni sus filas.
 
-        **3. Cruce automático** — Para cada fila del almacén, la app busca el precio:
-        - primero por coincidencia exacta de **artículo + lote**,
-        - si no existe ese lote en el base, usa el precio general del **artículo** (sin lote).
+        **3. Cruce automático** — Para cada fila del almacén, la app busca el precio por coincidencia exacta de
+        **artículo + lote**. Solo usa el precio general del artículo (sin lote) cuando el Excel base **no tiene
+        ningún lote definido para ese artículo**; si el base sí tiene lotes concretos y el lote del almacén no
+        está entre ellos, el precio se deja vacío para que lo revises (no se asigna el precio de otro lote).
 
         **4. Cálculo del importe** — `importe = kg_stock × €/kg`. El resultado es una tabla nueva
         (almacén + precio + importe) que puedes descargar en Excel; el archivo de almacén original queda intacto.
