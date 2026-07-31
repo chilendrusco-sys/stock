@@ -102,6 +102,32 @@ st.markdown(
         border-radius: 12px;
     }
     h3 { color: #f5f7fb !important; }
+    [data-testid="stSidebar"] .block-container {
+        padding-top: 1.1rem;
+    }
+    [data-testid="stSidebar"] h2 {
+        font-size: 1.05rem;
+        margin-bottom: 2px;
+    }
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+        font-size: 0.78rem;
+        margin-bottom: 2px;
+    }
+    [data-testid="stSidebar"] section[data-testid="stFileUploaderDropzone"] {
+        padding: 6px;
+        min-height: unset;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInstructions"] span {
+        font-size: 0.75rem;
+    }
+    [data-testid="stSidebar"] .stButton button,
+    [data-testid="stSidebar"] [data-testid="stDownloadButton"] button {
+        width: 100%;
+        font-size: 0.85rem;
+    }
+    [data-testid="stSidebar"] .element-container {
+        margin-bottom: 2px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -313,17 +339,36 @@ with st.sidebar:
     st.header("📂 Archivos")
     st.caption("Excel base → precios €/kg (se actualiza mes a mes)")
     base_file = st.file_uploader("Excel base", type=["xlsx", "xls"], label_visibility="collapsed")
+
+    if base_file is not None:
+        st.session_state["base_file_bytes"] = base_file.getvalue()
+        st.session_state["base_file_name"] = base_file.name
+
+    if "base_file_name" in st.session_state:
+        st.caption(f"✅ Base guardada en tu sesión: **{st.session_state['base_file_name']}**")
+        if st.button("🗑️ Quitar base guardada", use_container_width=True):
+            st.session_state.pop("base_file_bytes", None)
+            st.session_state.pop("base_file_name", None)
+            st.rerun()
+
     st.caption("Excel de almacén → artículos/lotes + stock en kg")
     warehouse_file = st.file_uploader("Excel de almacén", type=["xlsx", "xls"], label_visibility="collapsed")
     st.markdown(
         '<div class="info-box">Si no subes archivos, se usan los ejemplos incluidos en la carpeta <code>data</code>.</div>',
         unsafe_allow_html=True,
     )
+    st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+    download_placeholder = st.empty()
 
-if base_file is None and DEFAULT_BASE_FILE.exists():
+if base_file is not None:
+    base_path = base_file
+elif "base_file_bytes" in st.session_state:
+    base_path = BytesIO(st.session_state["base_file_bytes"])
+    base_path.name = st.session_state["base_file_name"]
+elif DEFAULT_BASE_FILE.exists():
     base_path = DEFAULT_BASE_FILE
 else:
-    base_path = base_file
+    base_path = None
 
 if warehouse_file is None and DEFAULT_WAREHOUSE_FILE.exists():
     warehouse_path = DEFAULT_WAREHOUSE_FILE
@@ -360,11 +405,8 @@ try:
 
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
-    header_col, download_col = st.columns([5, 2])
-    with header_col:
-        st.markdown("### Resultado (editable)")
-        st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
-    download_placeholder = download_col.empty()
+    st.markdown("### Resultado (editable)")
+    st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe se recalcula al vuelo y no se toca el Excel de almacén original.")
 
     result = result.reset_index(drop=True)
     needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
@@ -375,15 +417,19 @@ try:
     locked_df = result[~needs_review_mask].copy()
     editable_df = result[needs_review_mask].copy()
 
+    number_column_config = {
+        "kg_stock": st.column_config.NumberColumn("kg_stock", format="%.2f"),
+        "€/kg": st.column_config.NumberColumn("€/kg", format="%.2f", step=0.01),
+        "importe": st.column_config.NumberColumn("importe", format="%.2f"),
+    }
+
     if not editable_df.empty:
         edited_rows = st.data_editor(
             editable_df,
             key=editor_key,
             use_container_width=True,
             disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock", "importe"],
-            column_config={
-                "€/kg": st.column_config.NumberColumn("€/kg", format="%.4f", step=0.01),
-            },
+            column_config=number_column_config,
         )
         edited_rows["€/kg"] = pd.to_numeric(edited_rows["€/kg"], errors="coerce")
         edited_rows["importe"] = edited_rows["kg_stock"] * edited_rows["€/kg"]
@@ -392,7 +438,7 @@ try:
 
     if not locked_df.empty:
         st.caption("Filas con precio ya asignado (bloqueadas):")
-        st.dataframe(locked_df, use_container_width=True)
+        st.dataframe(locked_df, use_container_width=True, column_config=number_column_config)
 
     result = pd.concat([locked_df, edited_rows]).sort_index()
 
