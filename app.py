@@ -1,3 +1,4 @@
+import json
 import re
 import unicodedata
 from datetime import datetime
@@ -145,8 +146,26 @@ DATA_DIR = BASE_DIR / "data"
 DEFAULT_BASE_FILE = DATA_DIR / "base_stock.xlsx"
 DEFAULT_WAREHOUSE_FILE = DATA_DIR / "warehouse_sample.xlsx"
 CUSTOM_BASE_META = DATA_DIR / "custom_base_name.txt"
+NEGOCIO_RULES_FILE = DATA_DIR / "negocio_almacen_rules.json"
 
 ensure_sample_files()
+
+
+def load_negocio_rules() -> list[dict]:
+    if NEGOCIO_RULES_FILE.exists():
+        try:
+            return json.loads(NEGOCIO_RULES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    # Reglas de ejemplo por defecto, editables desde la propia app.
+    return [
+        {"palabra_clave": "Bonchef", "almacenes": "GFRESCO, GPEND"},
+        {"palabra_clave": "DPA", "almacenes": "DFRESCO, DPEND"},
+    ]
+
+
+def save_negocio_rules(rules: list[dict]) -> None:
+    NEGOCIO_RULES_FILE.write_text(json.dumps(rules, ensure_ascii=False, indent=2), encoding="utf-8")
 
 APP_PASSWORD = "Bonchef2026"
 
@@ -207,6 +226,22 @@ def load_excel(path):
     except Exception:
         # Reintenta con detección automática por si es un .xls antiguo u otro formato soportado.
         return pd.read_excel(path)
+
+
+def normalize_negocio_rules(raw_rules: list[dict]) -> list[tuple[str, set]]:
+    normalized = []
+    for rule in raw_rules:
+        keyword_key = normalize_text(rule.get("palabra_clave", ""))
+        almacen_keys = {normalize_text(a) for a in str(rule.get("almacenes", "")).split(",") if normalize_text(a)}
+        if keyword_key and almacen_keys:
+            normalized.append((keyword_key, almacen_keys))
+    return normalized
+
+
+def resolve_negocio_group(almacen_key: str, rules_norm: list[tuple[str, set]]):
+    # Un almacén solo debe pertenecer a un grupo de negocio; si coincide con varias reglas, es ambiguo.
+    matches = [keyword_key for keyword_key, almacen_keys in rules_norm if almacen_key in almacen_keys]
+    return matches[0] if len(matches) == 1 else None
 
 
 ALMACEN_CANDIDATES = ["almacen", "nombrealmacen", "almacen_nombre", "nombre almacen", "warehouse", "deposito", "centro", "planta", "ubicacion"]
@@ -280,7 +315,8 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
         match_key_item = base["articulo_key"]
 
     dup_mask = match_key.duplicated(keep=False)
-    unresolved_keys = []
+    ambiguous_multi_keys: set = set()
+    rules_norm = normalize_negocio_rules(load_negocio_rules())
     if dup_mask.any():
         tmp = base.assign(_mk=match_key)
         conflicting_keys = tmp[dup_mask].groupby("_mk")["€/kg"].nunique()
@@ -297,7 +333,9 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
             overrides = st.session_state.setdefault("negocio_price_overrides", {}).setdefault(base_file_id, {})
             resolved_ambiguous_keys = [k for k in ambiguous_keys if k in overrides]
             pending_ambiguous_keys = [k for k in ambiguous_keys if k not in overrides]
-            unresolved_keys = pending_ambiguous_keys
+            # Estas combinaciones se resuelven fila a fila en el cruce, según el almacén de cada
+            # fila del stock y las reglas negocio↔almacén (no se excluyen del base).
+            ambiguous_multi_keys = set(pending_ambiguous_keys)
 
             if resolved_ambiguous_keys:
                 # Sobrescribe el precio de todas las filas de esa combinación con el precio validado a mano.
@@ -339,9 +377,11 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
 
             if pending_ambiguous_keys:
                 st.warning(
-                    f"⚠️ {len(pending_ambiguous_keys)} combinación(es) tienen precio distinto según el negocio, pero el "
-                    "Excel de almacén no indica el negocio de cada fila, así que no se puede elegir el precio "
-                    "automáticamente. Elige el precio a usar para cada una (o escribe uno nuevo) y valida:"
+                    f"⚠️ {len(pending_ambiguous_keys)} combinación(es) tienen precio distinto según el negocio. "
+                    "La app intentará elegir el precio correcto sola usando el almacén de cada fila del stock y "
+                    "las reglas de '🏷️ Reglas: negocio según almacén'. Si para alguna fila el almacén no encaja "
+                    "en ninguna regla, quedará sin precio para que la edites a mano. También puedes validar aquí "
+                    "un precio fijo para toda la combinación (tiene prioridad sobre las reglas):"
                 )
                 st.dataframe(
                     conflict_rows[conflict_rows["_mk"].isin(pending_ambiguous_keys)][display_cols],
@@ -383,10 +423,20 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
 
     base["match_key"] = match_key
     base["match_key_item"] = match_key_item
-    if unresolved_keys:
-        base = base[~base["match_key"].isin(unresolved_keys)].copy()
-    result = base[["articulo", "lote", "almacen", "€/kg", "match_key", "match_key_item", "lote_key"]].drop_duplicates(subset=["match_key"], keep="first")
+
+    kept_cols = ["articulo", "lote", "almacen", "negocio_key", "€/kg", "match_key", "match_key_item", "lote_key"]
+    if ambiguous_multi_keys:
+        # Las combinaciones aún ambiguas conservan TODAS sus variantes (no se deduplican):
+        # valorate_stock elegirá la fila correcta según el almacén de cada fila del stock.
+        base_multi = base[base["match_key"].isin(ambiguous_multi_keys)][kept_cols]
+        base_rest = base[~base["match_key"].isin(ambiguous_multi_keys)][kept_cols].drop_duplicates(subset=["match_key"], keep="first")
+        result = pd.concat([base_rest, base_multi], ignore_index=True)
+    else:
+        result = base[kept_cols].drop_duplicates(subset=["match_key"], keep="first")
+
     result.attrs["uses_almacen"] = uses_almacen
+    result.attrs["ambiguous_match_keys"] = ambiguous_multi_keys
+    result.attrs["negocio_rules"] = rules_norm
     return result
 
 
@@ -459,6 +509,8 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
     # El almacén solo entra en el cruce si el Excel base realmente distingue precios por almacén;
     # así se respeta que un mismo artículo+lote tenga precios distintos según el almacén cuando aplica.
     uses_almacen = bool(base_df.attrs.get("uses_almacen"))
+    ambiguous_match_keys = base_df.attrs.get("ambiguous_match_keys") or set()
+    negocio_rules_norm = base_df.attrs.get("negocio_rules") or []
 
     warehouse = warehouse_df.copy()
     if uses_almacen:
@@ -468,26 +520,42 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
         warehouse["match_key"] = warehouse["articulo_key"] + "|" + warehouse["lote_key"]
         warehouse["match_key_item"] = warehouse["articulo_key"]
 
-    base_lookup = base_df.set_index("match_key")
+    # Las combinaciones aún ambiguas por negocio se resuelven aparte (varias filas por match_key),
+    # así que se excluyen de la búsqueda "normal" (que exige una única fila por match_key).
+    base_unique = base_df[~base_df["match_key"].isin(ambiguous_match_keys)]
+    base_lookup = base_unique.set_index("match_key")
     # Artículos para los que el Excel base NO especifica lote: el precio se aplica a cualquier lote de ese artículo
     # (dentro del mismo almacén, si el base distingue por almacén).
     # Si el base sí tiene lotes concretos para un artículo, un lote del almacén que no aparezca ahí queda sin precio (no se adivina).
     base_no_lote = (
-        base_df[base_df["lote_key"] == ""]
+        base_unique[base_unique["lote_key"] == ""]
         .drop_duplicates(subset=["match_key_item"], keep="first")
         .set_index("match_key_item")["€/kg"]
     )
+
+    # Opciones de precio (una por negocio) para cada combinación aún ambigua.
+    base_multi_options: dict = {}
+    if ambiguous_match_keys:
+        base_multi = base_df[base_df["match_key"].isin(ambiguous_match_keys)]
+        for mk, group in base_multi.groupby("match_key"):
+            base_multi_options[mk] = list(zip(group["negocio_key"], group["€/kg"]))
 
     warehouse["€/kg"] = None
     warehouse["importe"] = None
 
     for idx, row in warehouse.iterrows():
-        if row["match_key"] in base_lookup.index:
+        price = None
+        if row["match_key"] in base_multi_options:
+            # Se elige el negocio según el almacén de ESTA fila del stock, usando las reglas negocio↔almacén.
+            group_kw = resolve_negocio_group(row["almacen_key"], negocio_rules_norm)
+            if group_kw:
+                candidates = [p for negocio_key, p in base_multi_options[row["match_key"]] if group_kw in negocio_key]
+                if len(candidates) == 1:
+                    price = candidates[0]
+        elif row["match_key"] in base_lookup.index:
             price = base_lookup.loc[row["match_key"], "€/kg"]
         elif row["match_key_item"] in base_no_lote.index:
             price = base_no_lote.loc[row["match_key_item"]]
-        else:
-            price = None
 
         warehouse.at[idx, "€/kg"] = price
         if pd.notna(price):
@@ -607,6 +675,39 @@ with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
         > El Nº de Serie/SSCC identifica el bulto o palet físico, no el lote, así que se ignora en la valorización.
         """
     )
+
+with st.expander("🏷️ Reglas: qué negocio corresponde a cada almacén", expanded=False):
+    st.caption(
+        "Cuando un artículo+lote tiene precio distinto según el negocio, la app usa el almacén de cada fila "
+        "del stock para elegir el negocio correcto sola. Define aquí qué almacenes pertenecen a cada negocio "
+        "(por una palabra clave que aparezca en el negocio). Ejemplo: 'Bonchef' → GFRESCO, GPEND."
+    )
+    rules_raw = load_negocio_rules()
+    rules_df = pd.DataFrame(rules_raw) if rules_raw else pd.DataFrame([{"palabra_clave": "", "almacenes": ""}])
+    if "palabra_clave" not in rules_df.columns:
+        rules_df["palabra_clave"] = ""
+    if "almacenes" not in rules_df.columns:
+        rules_df["almacenes"] = ""
+    edited_rules_df = st.data_editor(
+        rules_df[["palabra_clave", "almacenes"]],
+        key="negocio_rules_editor",
+        use_container_width=True,
+        num_rows="dynamic",
+        hide_index=True,
+        column_config={
+            "palabra_clave": st.column_config.TextColumn("Palabra clave en el negocio"),
+            "almacenes": st.column_config.TextColumn("Almacenes que corresponden (separados por coma)"),
+        },
+    )
+    if st.button("💾 Guardar reglas"):
+        clean_rules = [
+            {"palabra_clave": str(r["palabra_clave"]).strip(), "almacenes": str(r["almacenes"]).strip()}
+            for _, r in edited_rules_df.iterrows()
+            if str(r["palabra_clave"]).strip() and str(r["almacenes"]).strip()
+        ]
+        save_negocio_rules(clean_rules)
+        st.success("✅ Reglas guardadas.")
+        st.rerun()
 
 with st.sidebar:
     st.header("📂 Archivos")
