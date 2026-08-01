@@ -883,9 +883,13 @@ try:
             # como parte de los datos originales y puede descartar el precio recién escrito.
             editable_input = editable_view.drop(columns=["importe"]).copy()
             editable_input["validar"] = False
+            # La key incluye las filas pendientes actuales: si cambian (una fila se valida y
+            # desaparece), Streamlit debe tratarlo como una tabla nueva. Si no, reutiliza el
+            # estado interno por POSICIÓN y una fila distinta hereda el check/precio de otra.
+            pending_rows_signature = "_".join(map(str, editable_view.index))
             edited_view = st.data_editor(
                 editable_input,
-                key=editor_key,
+                key=f"{editor_key}_{pending_rows_signature}",
                 use_container_width=True,
                 disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock"],
                 column_config={
