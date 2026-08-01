@@ -498,26 +498,27 @@ with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
     st.markdown(
         """
         **1. Excel base (precios)** — Contiene el precio **€/kg** vigente por `artículo`. Algunos artículos tienen
-        un precio distinto para cada `lote`; otros tienen un único precio general (sin lotes). Se actualiza mes a
-        mes; es la única fuente de precios.
+        un precio distinto para cada `lote`, y opcionalmente también por `almacén` o `negocio`; otros tienen un
+        único precio general. Se actualiza mes a mes; es la única fuente de precios.
 
         **2. Excel de almacén (stock)** — Contiene los `artículo`/`lote` con su cantidad en **kg**. Este archivo
         **no se modifica**: se lee tal cual, sin tocar sus cantidades ni sus filas.
 
-        **3. Cruce automático** — El lote **no es opcional** cuando el artículo lo tiene definido en el base: la app
-        exige coincidencia exacta de **artículo + lote**. Solo usa el precio general del artículo (sin lote) cuando
-        el Excel base **no tiene ningún lote definido para ese artículo**; si el base sí tiene lotes concretos y el
-        lote del almacén no está entre ellos, el precio se deja vacío para que lo revises (nunca se asigna el precio
-        de otro lote). Si el Excel base incluye también una columna de **almacén**, el cruce exige además que el
-        almacén coincida — así un mismo artículo+lote puede tener un precio distinto en cada almacén sin que se
-        mezclen entre sí ni se marquen como error. Si el Excel base tiene una columna de **negocio** y el mismo
-        artículo+lote tiene precios distintos según el negocio, la app **no adivina** cuál usar (el Excel de
-        almacén no indica el negocio de cada fila): esas filas se dejan sin precio para que las asignes manualmente.
+        **3. Cruce automático** — Para cada fila del almacén, la app busca su precio en el Excel base siguiendo estas reglas:
+
+        - **Artículo + lote (obligatorio)** — el lote **no es opcional**: si el base tiene lotes concretos para
+          ese artículo, exige coincidencia exacta. Solo usa el precio general del artículo (sin lote) cuando el
+          base **no tiene ningún lote definido para ese artículo**; si el lote del almacén no está entre los que
+          sí tiene el base, el precio se deja vacío para revisión (nunca se asigna el precio de otro lote).
+        - **Almacén** — si el base incluye una columna de almacén, el cruce exige además que el almacén coincida,
+          así un mismo artículo+lote puede tener un precio distinto en cada almacén sin mezclarse ni marcarse como error.
+        - **Negocio** — si el base incluye una columna de negocio y el mismo artículo+lote tiene precios distintos
+          según el negocio, la app **no adivina** cuál usar (el Excel de almacén no indica el negocio de cada fila):
+          esas filas se dejan sin precio para que las asignes manualmente.
+        - Si un artículo/lote del almacén no aparece en el Excel base, el precio también queda vacío y se marca para revisión.
 
         **4. Cálculo del importe** — `importe = kg_stock × €/kg`. El resultado es una tabla nueva
         (almacén + precio + importe) que puedes descargar en Excel; el archivo de almacén original queda intacto.
-
-        Si un artículo/lote del almacén no aparece en el Excel base, el precio queda vacío y se marca para que lo revises.
 
         > **Nota sobre Lote vs Nº de Serie/SSCC**: el `LoteInterno` es el lote real usado para el cruce de precios.
         > El Nº de Serie/SSCC identifica el bulto o palet físico, no el lote, así que se ignora en la valorización.
