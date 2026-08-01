@@ -200,41 +200,70 @@ QTY_CANDIDATES = [
 def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     item_col = find_column(df, ITEM_CANDIDATES)
     lote_col = find_column(df, LOTE_CANDIDATES)
+    almacen_col = find_column(df, ALMACEN_CANDIDATES)
     price_col = find_column(df, ["€/kg", "eurokg", "euro_kg", "precio_kg", "coste_kg", "porkg", "pricekg", "priceperkg", "precio"])
 
     if not item_col or not price_col:
         raise ValueError("El Excel base debe tener al menos una columna de artículo y una de precio €/kg.")
 
-    base = df[[item_col, lote_col, price_col]].copy() if lote_col else df[[item_col, price_col]].copy()
-    base = base.rename(columns={item_col: "articulo", price_col: "€/kg"})
+    keep_cols = [item_col, price_col]
     if lote_col:
-        base = base.rename(columns={lote_col: "lote"})
-    else:
+        keep_cols.append(lote_col)
+    if almacen_col:
+        keep_cols.append(almacen_col)
+    base = df[keep_cols].copy()
+    rename_map = {item_col: "articulo", price_col: "€/kg"}
+    if lote_col:
+        rename_map[lote_col] = "lote"
+    if almacen_col:
+        rename_map[almacen_col] = "almacen"
+    base = base.rename(columns=rename_map)
+    if "lote" not in base.columns:
         base["lote"] = ""
+    if "almacen" not in base.columns:
+        base["almacen"] = ""
 
     base["articulo"] = base["articulo"].fillna("")
     base["lote"] = base["lote"].fillna("")
+    base["almacen"] = base["almacen"].fillna("")
     base["€/kg"] = pd.to_numeric(base["€/kg"], errors="coerce")
     base = base.dropna(subset=["€/kg"]).copy()
     base["articulo_key"] = base["articulo"].apply(normalize_text)
     base["lote_key"] = base["lote"].apply(normalize_text)
-    base["match_key"] = base["articulo_key"] + "|" + base["lote_key"]
-    base["match_key_item"] = base["articulo_key"]
+    base["almacen_key"] = base["almacen"].apply(normalize_text)
 
-    dup_mask = base.duplicated(subset=["match_key"], keep=False)
+    # Si el base indica almacén, el mismo artículo+lote puede tener un precio distinto por almacén
+    # (es un caso válido, no un error), así que el almacén pasa a formar parte de la clave de cruce.
+    uses_almacen = bool(almacen_col)
+    if uses_almacen:
+        match_key = base["articulo_key"] + "|" + base["lote_key"] + "|" + base["almacen_key"]
+        match_key_item = base["articulo_key"] + "|" + base["almacen_key"]
+    else:
+        match_key = base["articulo_key"] + "|" + base["lote_key"]
+        match_key_item = base["articulo_key"]
+
+    dup_mask = match_key.duplicated(keep=False)
     if dup_mask.any():
-        conflicting_keys = base[dup_mask].groupby("match_key")["€/kg"].nunique()
+        tmp = base.assign(_mk=match_key)
+        conflicting_keys = tmp[dup_mask].groupby("_mk")["€/kg"].nunique()
         conflicting_keys = conflicting_keys[conflicting_keys > 1].index
         if len(conflicting_keys) > 0:
-            conflicts = base[base["match_key"].isin(conflicting_keys)].drop_duplicates(subset=["match_key"])
-            detail = ", ".join(f"{r.articulo} (lote {r.lote or '—'})" for r in conflicts.itertuples())
+            conflicts = tmp[tmp["_mk"].isin(conflicting_keys)].drop_duplicates(subset=["_mk"])
+            if uses_almacen:
+                detail = ", ".join(f"{r.articulo} (lote {r.lote or '—'}, almacén {r.almacen or '—'})" for r in conflicts.itertuples())
+            else:
+                detail = ", ".join(f"{r.articulo} (lote {r.lote or '—'})" for r in conflicts.itertuples())
             st.warning(
-                f"⚠️ El Excel base tiene {len(conflicting_keys)} combinación(es) artículo+lote con precios distintos "
-                f"duplicados: {detail}. Un artículo+lote no puede tener 2 precios; se ha usado el primero que aparece "
-                "en el archivo — revisa y corrige el Excel base para evitar ambigüedad."
+                f"⚠️ El Excel base tiene {len(conflicting_keys)} combinación(es) con precios distintos duplicados: "
+                f"{detail}. Esa combinación no puede tener 2 precios; se ha usado el primero que aparece en el "
+                "archivo — revisa y corrige el Excel base para evitar ambigüedad."
             )
 
-    return base[["articulo", "lote", "€/kg", "match_key", "match_key_item", "lote_key"]].drop_duplicates(subset=["match_key"], keep="first")
+    base["match_key"] = match_key
+    base["match_key_item"] = match_key_item
+    result = base[["articulo", "lote", "almacen", "€/kg", "match_key", "match_key_item", "lote_key"]].drop_duplicates(subset=["match_key"], keep="first")
+    result.attrs["uses_almacen"] = uses_almacen
+    return result
 
 
 def detect_warehouse_columns(df: pd.DataFrame) -> dict:
@@ -298,21 +327,32 @@ def prepare_warehouse_dataframe(df: pd.DataFrame, columns: dict) -> pd.DataFrame
     warehouse["kg_stock"] = pd.to_numeric(warehouse["kg_stock"], errors="coerce").fillna(0)
     warehouse["articulo_key"] = warehouse["articulo"].apply(normalize_text)
     warehouse["lote_key"] = warehouse["lote"].apply(normalize_text)
-    warehouse["match_key"] = warehouse["articulo_key"] + "|" + warehouse["lote_key"]
-    warehouse["match_key_item"] = warehouse["articulo_key"]
-    return warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "match_key", "match_key_item"]]
+    warehouse["almacen_key"] = warehouse["almacen"].apply(normalize_text)
+    return warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "articulo_key", "lote_key", "almacen_key"]]
 
 
 def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.DataFrame:
+    # El almacén solo entra en el cruce si el Excel base realmente distingue precios por almacén;
+    # así se respeta que un mismo artículo+lote tenga precios distintos según el almacén cuando aplica.
+    uses_almacen = bool(base_df.attrs.get("uses_almacen"))
+
+    warehouse = warehouse_df.copy()
+    if uses_almacen:
+        warehouse["match_key"] = warehouse["articulo_key"] + "|" + warehouse["lote_key"] + "|" + warehouse["almacen_key"]
+        warehouse["match_key_item"] = warehouse["articulo_key"] + "|" + warehouse["almacen_key"]
+    else:
+        warehouse["match_key"] = warehouse["articulo_key"] + "|" + warehouse["lote_key"]
+        warehouse["match_key_item"] = warehouse["articulo_key"]
+
     base_lookup = base_df.set_index("match_key")
-    # Artículos para los que el Excel base NO especifica lote: el precio se aplica a cualquier lote de ese artículo.
+    # Artículos para los que el Excel base NO especifica lote: el precio se aplica a cualquier lote de ese artículo
+    # (dentro del mismo almacén, si el base distingue por almacén).
     # Si el base sí tiene lotes concretos para un artículo, un lote del almacén que no aparezca ahí queda sin precio (no se adivina).
     base_no_lote = (
         base_df[base_df["lote_key"] == ""]
         .drop_duplicates(subset=["match_key_item"], keep="first")
         .set_index("match_key_item")["€/kg"]
     )
-    warehouse = warehouse_df.copy()
 
     warehouse["€/kg"] = None
     warehouse["importe"] = None
@@ -427,7 +467,9 @@ with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
         exige coincidencia exacta de **artículo + lote**. Solo usa el precio general del artículo (sin lote) cuando
         el Excel base **no tiene ningún lote definido para ese artículo**; si el base sí tiene lotes concretos y el
         lote del almacén no está entre ellos, el precio se deja vacío para que lo revises (nunca se asigna el precio
-        de otro lote).
+        de otro lote). Si el Excel base incluye también una columna de **almacén**, el cruce exige además que el
+        almacén coincida — así un mismo artículo+lote puede tener un precio distinto en cada almacén sin que se
+        mezclen entre sí ni se marquen como error.
 
         **4. Cálculo del importe** — `importe = kg_stock × €/kg`. El resultado es una tabla nueva
         (almacén + precio + importe) que puedes descargar en Excel; el archivo de almacén original queda intacto.
