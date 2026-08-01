@@ -532,8 +532,8 @@ try:
         search_term = st.text_input("🔍 Buscar", placeholder="Filtra por artículo, descripción, lote o almacén...")
     with filter_col:
         only_missing = st.checkbox("Mostrar solo filas sin precio")
-    if search_term or only_missing:
-        st.caption("El filtro solo afecta lo que ves aquí; confirma tus ediciones antes de cambiarlo para no perder cambios sin guardar.")
+    if search_term:
+        st.caption("El buscador solo filtra la tabla de filas ya con precio (bloqueadas). Las filas pendientes de precio se muestran siempre completas para no perder ninguna edición al buscar.")
 
     # Reservan el orden visual (resumen antes que la tabla) aunque se rellenen más abajo,
     # una vez que la tabla ya ha aplicado las ediciones del usuario.
@@ -550,8 +550,10 @@ try:
                 mask = mask | df[col].apply(normalize_text).str.contains(term_norm, na=False)
         return df[mask]
 
+    # La tabla editable nunca se filtra: si su contenido cambiara de forma o de
+    # orden entre ediciones, el editor de Streamlit pierde el precio recién escrito.
     locked_view = _filter_view(locked_df) if not only_missing else locked_df.iloc[0:0]
-    editable_view = _filter_view(editable_df)
+    editable_view = editable_df
 
     number_column_config = {
         "kg_stock": st.column_config.NumberColumn("kg_stock", format="%.2f"),
@@ -577,8 +579,8 @@ try:
                 edited_view.loc[negative_mask, "€/kg"] = pd.NA
             editable_df.update(edited_view)
             editable_df["importe"] = editable_df["kg_stock"] * editable_df["€/kg"]
-        elif search_term or only_missing:
-            st.caption("🔎 Ninguna fila sin precio coincide con el filtro actual.")
+        elif only_missing:
+            st.caption("🔎 No quedan filas sin precio.")
 
         if not locked_view.empty:
             st.caption("🔒 Filas con precio ya asignado (bloqueadas):")
