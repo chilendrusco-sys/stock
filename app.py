@@ -248,16 +248,19 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         conflicting_keys = tmp[dup_mask].groupby("_mk")["€/kg"].nunique()
         conflicting_keys = conflicting_keys[conflicting_keys > 1].index
         if len(conflicting_keys) > 0:
-            conflicts = tmp[tmp["_mk"].isin(conflicting_keys)].drop_duplicates(subset=["_mk"])
+            conflicts = tmp[tmp["_mk"].isin(conflicting_keys)].sort_values("_mk")
+            # Fila de Excel real (encabezado = fila 1, primera fila de datos = fila 2).
+            conflict_rows = conflicts.assign(fila_excel=conflicts.index + 2)
+            display_cols = ["fila_excel", "articulo", "lote"]
             if uses_almacen:
-                detail = ", ".join(f"{r.articulo} (lote {r.lote or '—'}, almacén {r.almacen or '—'})" for r in conflicts.itertuples())
-            else:
-                detail = ", ".join(f"{r.articulo} (lote {r.lote or '—'})" for r in conflicts.itertuples())
+                display_cols.append("almacen")
+            display_cols.append("€/kg")
             st.warning(
-                f"⚠️ El Excel base tiene {len(conflicting_keys)} combinación(es) con precios distintos duplicados: "
-                f"{detail}. Esa combinación no puede tener 2 precios; se ha usado el primero que aparece en el "
-                "archivo — revisa y corrige el Excel base para evitar ambigüedad."
+                f"⚠️ El Excel base tiene {len(conflicting_keys)} combinación(es) con precios distintos duplicados. "
+                "Esa combinación no puede tener 2 precios; se ha usado el primero que aparece en el archivo. "
+                "Mira las filas exactas abajo y corrige el Excel base:"
             )
+            st.dataframe(conflict_rows[display_cols], use_container_width=True, hide_index=True)
 
     base["match_key"] = match_key
     base["match_key_item"] = match_key_item
