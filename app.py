@@ -151,24 +151,27 @@ ensure_sample_files()
 APP_PASSWORD = "Bonchef2026"
 
 if not st.session_state.get("authenticated", False):
-    st.markdown(
-        """
-        <div class="hero">
-            <div class="hero-title">🔒 Acceso restringido</div>
-            <div class="hero-subtitle">Introduce la contraseña para entrar a la valorización de stock.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.form("login_form"):
-        password_input = st.text_input("Contraseña", type="password")
-        submitted = st.form_submit_button("Entrar")
-    if submitted:
-        if password_input == APP_PASSWORD:
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("❌ Contraseña incorrecta.")
+    st.markdown("<div style='height: 8vh;'></div>", unsafe_allow_html=True)
+    _, login_col, _ = st.columns([1, 1.2, 1])
+    with login_col:
+        st.markdown(
+            """
+            <div class="hero" style="text-align: center;">
+                <div class="hero-title">🔒 Acceso restringido</div>
+                <div class="hero-subtitle">Introduce la contraseña para entrar a la valorización de stock.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("login_form"):
+            password_input = st.text_input("Contraseña", type="password")
+            submitted = st.form_submit_button("Entrar", use_container_width=True)
+        if submitted:
+            if password_input == APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("❌ Contraseña incorrecta.")
     st.stop()
 
 
