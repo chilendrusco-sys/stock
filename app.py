@@ -760,7 +760,9 @@ try:
     almacen_values = almacen_values[almacen_values != ""]
     almacen_name = almacen_values.iloc[0] if not almacen_values.empty else ""
     safe_almacen = re.sub(r'[<>:"/\\|?*]', "", almacen_name).strip()
-    file_name = f"resultado_valoracion_{safe_almacen}.xlsx" if safe_almacen else "resultado_valoracion.xlsx"
+    warehouse_stem = Path(warehouse_file_id).stem
+    safe_warehouse_name = re.sub(r'[<>:"/\\|?*]', "", warehouse_stem).strip()
+    file_name = f"valoracion_{safe_warehouse_name}.xlsx" if safe_warehouse_name else "valoracion.xlsx"
 
     download_placeholder.download_button(
         label="⬇️ Descargar Excel",
