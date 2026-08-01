@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-cloudflared.exe
 .streamlit/secrets.toml
 data/custom_base.*
 data/custom_base_name.txt
