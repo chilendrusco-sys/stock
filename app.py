@@ -402,16 +402,18 @@ st.markdown(
 with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
     st.markdown(
         """
-        **1. Excel base (precios)** — Contiene, para cada `artículo` (y opcionalmente `lote`), el precio **€/kg** vigente.
-        Se actualiza mes a mes; es la única fuente de precios.
+        **1. Excel base (precios)** — Contiene el precio **€/kg** vigente por `artículo`. Algunos artículos tienen
+        un precio distinto para cada `lote`; otros tienen un único precio general (sin lotes). Se actualiza mes a
+        mes; es la única fuente de precios.
 
         **2. Excel de almacén (stock)** — Contiene los `artículo`/`lote` con su cantidad en **kg**. Este archivo
         **no se modifica**: se lee tal cual, sin tocar sus cantidades ni sus filas.
 
-        **3. Cruce automático** — Para cada fila del almacén, la app busca el precio por coincidencia exacta de
-        **artículo + lote**. Solo usa el precio general del artículo (sin lote) cuando el Excel base **no tiene
-        ningún lote definido para ese artículo**; si el base sí tiene lotes concretos y el lote del almacén no
-        está entre ellos, el precio se deja vacío para que lo revises (no se asigna el precio de otro lote).
+        **3. Cruce automático** — El lote **no es opcional** cuando el artículo lo tiene definido en el base: la app
+        exige coincidencia exacta de **artículo + lote**. Solo usa el precio general del artículo (sin lote) cuando
+        el Excel base **no tiene ningún lote definido para ese artículo**; si el base sí tiene lotes concretos y el
+        lote del almacén no está entre ellos, el precio se deja vacío para que lo revises (nunca se asigna el precio
+        de otro lote).
 
         **4. Cálculo del importe** — `importe = kg_stock × €/kg`. El resultado es una tabla nueva
         (almacén + precio + importe) que puedes descargar en Excel; el archivo de almacén original queda intacto.
