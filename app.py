@@ -184,6 +184,7 @@ def load_excel(path):
 
 
 ALMACEN_CANDIDATES = ["almacen", "nombrealmacen", "almacen_nombre", "nombre almacen", "warehouse", "deposito", "centro", "planta", "ubicacion"]
+NEGOCIO_CANDIDATES = ["negocio", "unidadnegocio", "unidad_negocio", "unidad de negocio", "lineadenegocio", "linea_negocio", "linea de negocio", "businessunit", "business_unit", "business", "division"]
 ITEM_CANDIDATES = ["articulo", "articuloid", "producto", "producto_id", "codigo", "codigoarticulo", "referencia", "ref", "item", "article", "sku"]
 # "LoteInterno" es el lote real. El "Nº de Serie"/SSCC identifica el bulto/palet, no el lote: se excluye a propósito.
 LOTE_CANDIDATES = ["loteinterno", "lote_interno", "lote interno", "lote", "lot", "batch", "numerodelote", "numlote"]
@@ -201,6 +202,7 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     item_col = find_column(df, ITEM_CANDIDATES)
     lote_col = find_column(df, LOTE_CANDIDATES)
     almacen_col = find_column(df, ALMACEN_CANDIDATES)
+    negocio_col = find_column(df, NEGOCIO_CANDIDATES)
     price_col = find_column(df, ["€/kg", "eurokg", "euro_kg", "precio_kg", "coste_kg", "porkg", "pricekg", "priceperkg", "precio"])
 
     if not item_col or not price_col:
@@ -211,30 +213,39 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         keep_cols.append(lote_col)
     if almacen_col:
         keep_cols.append(almacen_col)
+    if negocio_col:
+        keep_cols.append(negocio_col)
     base = df[keep_cols].copy()
     rename_map = {item_col: "articulo", price_col: "€/kg"}
     if lote_col:
         rename_map[lote_col] = "lote"
     if almacen_col:
         rename_map[almacen_col] = "almacen"
+    if negocio_col:
+        rename_map[negocio_col] = "negocio"
     base = base.rename(columns=rename_map)
     if "lote" not in base.columns:
         base["lote"] = ""
     if "almacen" not in base.columns:
         base["almacen"] = ""
+    if "negocio" not in base.columns:
+        base["negocio"] = ""
 
     base["articulo"] = base["articulo"].fillna("")
     base["lote"] = base["lote"].fillna("")
     base["almacen"] = base["almacen"].fillna("")
+    base["negocio"] = base["negocio"].fillna("")
     base["€/kg"] = pd.to_numeric(base["€/kg"], errors="coerce")
     base = base.dropna(subset=["€/kg"]).copy()
     base["articulo_key"] = base["articulo"].apply(normalize_text)
     base["lote_key"] = base["lote"].apply(normalize_text)
     base["almacen_key"] = base["almacen"].apply(normalize_text)
+    base["negocio_key"] = base["negocio"].apply(normalize_text)
 
     # Si el base indica almacén, el mismo artículo+lote puede tener un precio distinto por almacén
     # (es un caso válido, no un error), así que el almacén pasa a formar parte de la clave de cruce.
     uses_almacen = bool(almacen_col)
+    uses_negocio = bool(negocio_col)
     if uses_almacen:
         match_key = base["articulo_key"] + "|" + base["lote_key"] + "|" + base["almacen_key"]
         match_key_item = base["articulo_key"] + "|" + base["almacen_key"]
@@ -243,27 +254,54 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         match_key_item = base["articulo_key"]
 
     dup_mask = match_key.duplicated(keep=False)
+    unresolved_keys = []
     if dup_mask.any():
         tmp = base.assign(_mk=match_key)
         conflicting_keys = tmp[dup_mask].groupby("_mk")["€/kg"].nunique()
         conflicting_keys = conflicting_keys[conflicting_keys > 1].index
         if len(conflicting_keys) > 0:
             conflicts = tmp[tmp["_mk"].isin(conflicting_keys)].sort_values("_mk")
+            # El Excel de almacén no indica el negocio, así que si el precio distinto se debe a un
+            # negocio distinto no se puede elegir automáticamente: se deja sin precio para revisión manual.
+            negocio_explains = conflicts.groupby("_mk")["negocio_key"].nunique() > 1 if uses_negocio else pd.Series(dtype=bool)
+            ambiguous_keys = [k for k in conflicting_keys if uses_negocio and negocio_explains.get(k, False)]
+            real_conflict_keys = [k for k in conflicting_keys if k not in ambiguous_keys]
+            unresolved_keys = ambiguous_keys
+
             # Fila de Excel real (encabezado = fila 1, primera fila de datos = fila 2).
             conflict_rows = conflicts.assign(fila_excel=conflicts.index + 2)
             display_cols = ["fila_excel", "articulo", "lote"]
             if uses_almacen:
                 display_cols.append("almacen")
+            if uses_negocio:
+                display_cols.append("negocio")
             display_cols.append("€/kg")
-            st.warning(
-                f"⚠️ El Excel base tiene {len(conflicting_keys)} combinación(es) con precios distintos duplicados. "
-                "Esa combinación no puede tener 2 precios; se ha usado el primero que aparece en el archivo. "
-                "Mira las filas exactas abajo y corrige el Excel base:"
-            )
-            st.dataframe(conflict_rows[display_cols], use_container_width=True, hide_index=True)
+
+            if real_conflict_keys:
+                st.warning(
+                    f"⚠️ El Excel base tiene {len(real_conflict_keys)} combinación(es) con precios distintos "
+                    "duplicados sin que el negocio lo explique. Esa combinación no puede tener 2 precios; se ha "
+                    "usado el primero que aparece en el archivo. Mira las filas exactas abajo y corrige el Excel base:"
+                )
+                st.dataframe(
+                    conflict_rows[conflict_rows["_mk"].isin(real_conflict_keys)][display_cols],
+                    use_container_width=True, hide_index=True,
+                )
+            if ambiguous_keys:
+                st.warning(
+                    f"⚠️ {len(ambiguous_keys)} combinación(es) tienen precio distinto según el negocio, pero el "
+                    "Excel de almacén no indica el negocio de cada fila, así que no se puede elegir el precio "
+                    "automáticamente. Esas filas del almacén se dejan sin precio para que las asignes manualmente:"
+                )
+                st.dataframe(
+                    conflict_rows[conflict_rows["_mk"].isin(ambiguous_keys)][display_cols],
+                    use_container_width=True, hide_index=True,
+                )
 
     base["match_key"] = match_key
     base["match_key_item"] = match_key_item
+    if unresolved_keys:
+        base = base[~base["match_key"].isin(unresolved_keys)].copy()
     result = base[["articulo", "lote", "almacen", "€/kg", "match_key", "match_key_item", "lote_key"]].drop_duplicates(subset=["match_key"], keep="first")
     result.attrs["uses_almacen"] = uses_almacen
     return result
@@ -472,7 +510,9 @@ with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
         lote del almacén no está entre ellos, el precio se deja vacío para que lo revises (nunca se asigna el precio
         de otro lote). Si el Excel base incluye también una columna de **almacén**, el cruce exige además que el
         almacén coincida — así un mismo artículo+lote puede tener un precio distinto en cada almacén sin que se
-        mezclen entre sí ni se marquen como error.
+        mezclen entre sí ni se marquen como error. Si el Excel base tiene una columna de **negocio** y el mismo
+        artículo+lote tiene precios distintos según el negocio, la app **no adivina** cuál usar (el Excel de
+        almacén no indica el negocio de cada fila): esas filas se dejan sin precio para que las asignes manualmente.
 
         **4. Cálculo del importe** — `importe = kg_stock × €/kg`. El resultado es una tabla nueva
         (almacén + precio + importe) que puedes descargar en Excel; el archivo de almacén original queda intacto.
