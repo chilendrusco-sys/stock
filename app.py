@@ -220,6 +220,20 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     base["lote_key"] = base["lote"].apply(normalize_text)
     base["match_key"] = base["articulo_key"] + "|" + base["lote_key"]
     base["match_key_item"] = base["articulo_key"]
+
+    dup_mask = base.duplicated(subset=["match_key"], keep=False)
+    if dup_mask.any():
+        conflicting_keys = base[dup_mask].groupby("match_key")["€/kg"].nunique()
+        conflicting_keys = conflicting_keys[conflicting_keys > 1].index
+        if len(conflicting_keys) > 0:
+            conflicts = base[base["match_key"].isin(conflicting_keys)].drop_duplicates(subset=["match_key"])
+            detail = ", ".join(f"{r.articulo} (lote {r.lote or '—'})" for r in conflicts.itertuples())
+            st.warning(
+                f"⚠️ El Excel base tiene {len(conflicting_keys)} combinación(es) artículo+lote con precios distintos "
+                f"duplicados: {detail}. Un artículo+lote no puede tener 2 precios; se ha usado el primero que aparece "
+                "en el archivo — revisa y corrige el Excel base para evitar ambigüedad."
+            )
+
     return base[["articulo", "lote", "€/kg", "match_key", "match_key_item", "lote_key"]].drop_duplicates(subset=["match_key"], keep="first")
 
 
