@@ -224,7 +224,7 @@ QTY_CANDIDATES = [
 ]
 
 
-def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataFrame:
     item_col = find_column(df, ITEM_CANDIDATES)
     lote_col = find_column(df, LOTE_CANDIDATES)
     almacen_col = find_column(df, ALMACEN_CANDIDATES)
@@ -288,11 +288,22 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         if len(conflicting_keys) > 0:
             conflicts = tmp[tmp["_mk"].isin(conflicting_keys)].sort_values("_mk")
             # El Excel de almacén no indica el negocio, así que si el precio distinto se debe a un
-            # negocio distinto no se puede elegir automáticamente: se deja sin precio para revisión manual.
+            # negocio distinto no se puede elegir automáticamente: se deja sin precio para revisión manual,
+            # salvo que el usuario ya haya validado un precio a mano (ver overrides más abajo).
             negocio_explains = conflicts.groupby("_mk")["negocio_key"].nunique() > 1 if uses_negocio else pd.Series(dtype=bool)
             ambiguous_keys = [k for k in conflicting_keys if uses_negocio and negocio_explains.get(k, False)]
             real_conflict_keys = [k for k in conflicting_keys if k not in ambiguous_keys]
-            unresolved_keys = ambiguous_keys
+
+            overrides = st.session_state.setdefault("negocio_price_overrides", {}).setdefault(base_file_id, {})
+            resolved_ambiguous_keys = [k for k in ambiguous_keys if k in overrides]
+            pending_ambiguous_keys = [k for k in ambiguous_keys if k not in overrides]
+            unresolved_keys = pending_ambiguous_keys
+
+            if resolved_ambiguous_keys:
+                # Sobrescribe el precio de todas las filas de esa combinación con el precio validado a mano.
+                override_price = match_key.map(overrides)
+                override_mask = match_key.isin(resolved_ambiguous_keys)
+                base.loc[override_mask, "€/kg"] = override_price[override_mask]
 
             # Fila de Excel real (encabezado = fila 1, primera fila de datos = fila 2).
             conflict_rows = conflicts.assign(fila_excel=conflicts.index + 2)
@@ -313,16 +324,62 @@ def prepare_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                     conflict_rows[conflict_rows["_mk"].isin(real_conflict_keys)][display_cols],
                     use_container_width=True, hide_index=True,
                 )
-            if ambiguous_keys:
+
+            if resolved_ambiguous_keys:
+                resolved_summary = []
+                for mk in resolved_ambiguous_keys:
+                    sub = conflicts[conflicts["_mk"] == mk].iloc[0]
+                    resolved_summary.append({"articulo": sub["articulo"], "lote": sub["lote"], "€/kg validado": overrides[mk]})
+                st.success(f"✅ {len(resolved_ambiguous_keys)} combinación(es) de negocio ya validada(s) con el precio elegido:")
+                st.dataframe(pd.DataFrame(resolved_summary), use_container_width=True, hide_index=True)
+                if st.button("↩️ Deshacer validaciones de negocio", key=f"undo_negocio_{base_file_id}"):
+                    for mk in resolved_ambiguous_keys:
+                        overrides.pop(mk, None)
+                    st.rerun()
+
+            if pending_ambiguous_keys:
                 st.warning(
-                    f"⚠️ {len(ambiguous_keys)} combinación(es) tienen precio distinto según el negocio, pero el "
+                    f"⚠️ {len(pending_ambiguous_keys)} combinación(es) tienen precio distinto según el negocio, pero el "
                     "Excel de almacén no indica el negocio de cada fila, así que no se puede elegir el precio "
-                    "automáticamente. Esas filas del almacén se dejan sin precio para que las asignes manualmente:"
+                    "automáticamente. Elige el precio a usar para cada una (o escribe uno nuevo) y valida:"
                 )
                 st.dataframe(
-                    conflict_rows[conflict_rows["_mk"].isin(ambiguous_keys)][display_cols],
+                    conflict_rows[conflict_rows["_mk"].isin(pending_ambiguous_keys)][display_cols],
                     use_container_width=True, hide_index=True,
                 )
+                pending_pick_rows = []
+                for mk in pending_ambiguous_keys:
+                    sub = conflicts[conflicts["_mk"] == mk]
+                    opciones = " | ".join(f"{r['negocio']}: {r['€/kg']:.4f}" for _, r in sub.iterrows())
+                    pending_pick_rows.append({
+                        "match_key": mk,
+                        "articulo": sub["articulo"].iloc[0],
+                        "lote": sub["lote"].iloc[0],
+                        "opciones (negocio: precio)": opciones,
+                        "€/kg a usar": None,
+                    })
+                pending_pick_df = pd.DataFrame(pending_pick_rows)
+                edited_pick_df = st.data_editor(
+                    pending_pick_df.drop(columns=["match_key"]),
+                    key=f"negocio_resolve_{base_file_id}",
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["articulo", "lote", "opciones (negocio: precio)"],
+                    column_config={
+                        "€/kg a usar": st.column_config.NumberColumn("€/kg a usar", format="%.4f", step=0.01, min_value=0.0),
+                    },
+                )
+                if st.button("✅ Validar precios elegidos", key=f"save_negocio_{base_file_id}"):
+                    saved_count = 0
+                    for i, mk in enumerate(pending_pick_df["match_key"]):
+                        price = edited_pick_df.iloc[i]["€/kg a usar"]
+                        if pd.notna(price):
+                            overrides[mk] = float(price)
+                            saved_count += 1
+                    if saved_count:
+                        st.rerun()
+                    else:
+                        st.warning("Escribe al menos un precio en '€/kg a usar' antes de validar.")
 
     base["match_key"] = match_key
     base["match_key_item"] = match_key_item
@@ -610,6 +667,7 @@ try:
     base_df = load_excel(base_path)
     warehouse_df = load_excel(warehouse_path)
 
+    base_file_id = getattr(base_path, "name", str(base_path))
     warehouse_columns = detect_warehouse_columns(warehouse_df)
     warehouse_file_id = getattr(warehouse_path, "name", str(warehouse_path))
     with st.expander("🗂️ Columnas detectadas en el Excel de almacén", expanded=not warehouse_columns["kg_stock"]):
@@ -637,7 +695,7 @@ try:
         st.caption("Columnas originales del archivo: " + ", ".join(str(c) for c in warehouse_df.columns))
 
     with st.spinner("Procesando archivos y calculando valorización..."):
-        base_ready = prepare_base_dataframe(base_df)
+        base_ready = prepare_base_dataframe(base_df, base_file_id)
         warehouse_ready = prepare_warehouse_dataframe(warehouse_df, warehouse_columns)
         result = valorate_stock(base_ready, warehouse_ready)
 
