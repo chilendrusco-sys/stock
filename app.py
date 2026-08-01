@@ -491,11 +491,16 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
     # así que se excluyen de la búsqueda "normal" (que exige una única fila por match_key).
     base_unique = base_df[~base_df["match_key"].isin(ambiguous_match_keys)]
     base_lookup = base_unique.set_index("match_key")
-    # Artículos para los que el Excel base NO especifica lote: el precio se aplica a cualquier lote de ese artículo
-    # (dentro del mismo almacén, si el base distingue por almacén).
-    # Si el base sí tiene lotes concretos para un artículo, un lote del almacén que no aparezca ahí queda sin precio (no se adivina).
+    # Regla estricta de precio por artículo/lote:
+    # - Si el Excel base define lotes concretos para un artículo, la coincidencia debe ser exacta
+    #   artículo+lote (y, si aplica, almacén). No se usa el precio general de ese artículo para otro lote.
+    # - Solo se permite el precio general (sin lote) cuando ese artículo no tiene ningún lote concreto
+    #   definido en el base para la misma clave artículo+almacén.
+    explicit_lot_items = set(base_unique[base_unique["lote_key"] != ""]["match_key_item"])
     base_no_lote = (
-        base_unique[base_unique["lote_key"] == ""]
+        base_unique[
+            (base_unique["lote_key"] == "") & (~base_unique["match_key_item"].isin(explicit_lot_items))
+        ]
         .drop_duplicates(subset=["match_key_item"], keep="first")
         .set_index("match_key_item")["€/kg"]
     )
@@ -632,9 +637,10 @@ with st.expander("ℹ️ ¿Cómo funciona esta valorización?", expanded=False):
         **3. Cruce automático** — Para cada fila del almacén, la app busca su precio en el Excel base siguiendo estas reglas:
 
         - **Artículo + lote (obligatorio)** — el lote **no es opcional**: si el base tiene lotes concretos para
-          ese artículo, exige coincidencia exacta. Solo usa el precio general del artículo (sin lote) cuando el
-          base **no tiene ningún lote definido para ese artículo**; si el lote del almacén no está entre los que
-          sí tiene el base, el precio se deja vacío para revisión (nunca se asigna el precio de otro lote).
+          ese artículo, exige coincidencia exacta de artículo + lote (y almacén, si el base lo distingue). Solo usa
+          el precio general del artículo (sin lote) cuando el base **no tiene ningún lote definido para ese artículo**;
+          si el lote del almacén no está entre los que sí tiene el base, el precio se deja vacío para revisión
+          (nunca se asigna el precio de otro lote).
         - **Almacén** — si el base incluye una columna de almacén, el cruce exige además que el almacén coincida,
           así un mismo artículo+lote puede tener un precio distinto en cada almacén sin mezclarse ni marcarse como error.
         - **Negocio** — si el base incluye una columna de negocio y el mismo artículo+lote tiene precios distintos
@@ -820,9 +826,18 @@ try:
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
     st.markdown("### 🧮 Resultado (editable)")
-    st.caption("Solo las filas sin precio (vacío o 0) son editables. Las que ya tienen precio quedan bloqueadas. El importe aparece en el Resumen de arriba y en las descargas en cuanto guardas el precio (pulsa Enter o Tab).")
+    st.caption("Solo las filas sin precio (vacío o 0) son editables. Escribe el €/kg y marca ✅ Validar para confirmarlo: la fila pasa automáticamente a la tabla de precios ya asignados (bloqueada).")
 
     result = result.reset_index(drop=True)
+
+    # Precios de filas ya validadas manualmente (checkbox ✅ Validar): se aplican antes de
+    # separar las tablas para que esa fila aparezca ya en la tabla de precios asignados.
+    manual_overrides = st.session_state.setdefault("manual_price_overrides", {}).setdefault(editor_key, {})
+    for row_id, price in manual_overrides.items():
+        if row_id in result.index:
+            result.loc[row_id, "€/kg"] = price
+            result.loc[row_id, "importe"] = result.loc[row_id, "kg_stock"] * price
+
     needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
 
     locked_df = result[~needs_review_mask].copy()
@@ -866,27 +881,44 @@ try:
         if not editable_view.empty:
             # La columna "importe" se calcula aparte: si se pasa al editor, éste la trata
             # como parte de los datos originales y puede descartar el precio recién escrito.
+            editable_input = editable_view.drop(columns=["importe"]).copy()
+            editable_input["validar"] = False
             edited_view = st.data_editor(
-                editable_view.drop(columns=["importe"]),
+                editable_input,
                 key=editor_key,
                 use_container_width=True,
                 disabled=["almacen", "articulo", "descripcion", "lote", "kg_stock"],
-                column_config=number_column_config,
+                column_config={
+                    **number_column_config,
+                    "validar": st.column_config.CheckboxColumn(
+                        "✅ Validar",
+                        help="Marca cuando el precio esté confirmado para bajar la fila a la tabla de precios asignados.",
+                    ),
+                },
             )
             edited_view["€/kg"] = pd.to_numeric(edited_view["€/kg"], errors="coerce")
             negative_mask = edited_view["€/kg"] < 0
             if negative_mask.any():
                 st.warning(f"⚠️ {int(negative_mask.sum())} precio(s) negativo(s) no son válidos y se han ignorado; esas filas siguen sin precio.")
                 edited_view.loc[negative_mask, "€/kg"] = pd.NA
-            editable_df.update(edited_view)
+
+            # Solo baja a la tabla de precios asignados cuando el usuario marca el check
+            # con un precio válido; así la validación es explícita, no automática.
+            to_validate_mask = edited_view["validar"] & edited_view["€/kg"].notna() & (edited_view["€/kg"] > 0)
+            if to_validate_mask.any():
+                for row_id, price in edited_view.loc[to_validate_mask, "€/kg"].items():
+                    manual_overrides[int(row_id)] = float(price)
+                st.rerun()
+
+            editable_df.update(edited_view.drop(columns=["validar"]))
             editable_df["importe"] = editable_df["kg_stock"] * editable_df["€/kg"]
 
             # Recalculado tras aplicar las ediciones (no antes), para que el aviso baje al corregir precios.
             still_missing = int((editable_df["€/kg"].isna() | (editable_df["€/kg"] == 0)).sum())
             if still_missing:
-                st.warning(f"⚠️ {still_missing} de {len(editable_df)} línea(s) siguen sin precio válido. Edítalas arriba en la columna €/kg.")
+                st.warning(f"⚠️ {still_missing} de {len(editable_df)} línea(s) siguen sin precio válido. Escribe el €/kg y marca ✅ Validar para pasarlas a la tabla de precios asignados.")
             else:
-                st.success("✅ Todas las líneas en revisión ya tienen precio.")
+                st.success("✅ Todas las líneas en revisión ya tienen precio. Marca ✅ Validar para pasarlas a la tabla de precios asignados.")
         elif only_missing:
             st.caption("🔎 No quedan filas sin precio.")
 
