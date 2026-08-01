@@ -838,7 +838,9 @@ try:
             result.loc[row_id, "€/kg"] = price
             result.loc[row_id, "importe"] = result.loc[row_id, "kg_stock"] * price
 
-    needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
+    # Una fila validada manualmente (aunque el precio elegido sea 0) ya no debe
+    # considerarse pendiente: el 0 es una decisión explícita del usuario, no un vacío.
+    needs_review_mask = (result["€/kg"].isna() | (result["€/kg"] == 0)) & ~result.index.isin(manual_overrides.keys())
 
     locked_df = result[~needs_review_mask].copy()
     editable_df = result[needs_review_mask].copy()
@@ -907,8 +909,8 @@ try:
                 edited_view.loc[negative_mask, "€/kg"] = pd.NA
 
             # Solo baja a la tabla de precios asignados cuando el usuario marca el check
-            # con un precio válido; así la validación es explícita, no automática.
-            to_validate_mask = edited_view["validar"] & edited_view["€/kg"].notna() & (edited_view["€/kg"] > 0)
+            # con un precio válido (0 incluido: puede ser una decisión explícita de precio nulo).
+            to_validate_mask = edited_view["validar"] & edited_view["€/kg"].notna() & (edited_view["€/kg"] >= 0)
             if to_validate_mask.any():
                 for row_id, price in edited_view.loc[to_validate_mask, "€/kg"].items():
                     manual_overrides[int(row_id)] = float(price)
@@ -936,7 +938,8 @@ try:
 
     total_importe = float(result["importe"].sum()) if "importe" in result.columns else 0.0
     total_kg = float(result["kg_stock"].sum()) if "kg_stock" in result.columns else 0.0
-    sin_precio = int((result["€/kg"].isna() | (result["€/kg"] == 0)).sum())
+    # Igual que arriba: un 0 validado manualmente no cuenta como "sin precio".
+    sin_precio = int(((result["€/kg"].isna() | (result["€/kg"] == 0)) & ~result.index.isin(manual_overrides.keys())).sum())
 
     with kpi_placeholder:
         st.markdown("### 📊 Resumen")
