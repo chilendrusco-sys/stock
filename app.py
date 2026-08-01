@@ -649,9 +649,6 @@ try:
     result = result.reset_index(drop=True)
     needs_review_mask = result["€/kg"].isna() | (result["€/kg"] == 0)
 
-    if needs_review_mask.any():
-        st.warning(f"⚠️ {int(needs_review_mask.sum())} línea(s) sin precio válido (vacío o 0). Edítalas abajo en la columna €/kg.")
-
     locked_df = result[~needs_review_mask].copy()
     editable_df = result[needs_review_mask].copy()
 
@@ -707,6 +704,13 @@ try:
                 edited_view.loc[negative_mask, "€/kg"] = pd.NA
             editable_df.update(edited_view)
             editable_df["importe"] = editable_df["kg_stock"] * editable_df["€/kg"]
+
+            # Recalculado tras aplicar las ediciones (no antes), para que el aviso baje al corregir precios.
+            still_missing = int((editable_df["€/kg"].isna() | (editable_df["€/kg"] == 0)).sum())
+            if still_missing:
+                st.warning(f"⚠️ {still_missing} de {len(editable_df)} línea(s) siguen sin precio válido. Edítalas arriba en la columna €/kg.")
+            else:
+                st.success("✅ Todas las líneas en revisión ya tienen precio.")
         elif only_missing:
             st.caption("🔎 No quedan filas sin precio.")
 
