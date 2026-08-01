@@ -316,6 +316,7 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
 
     dup_mask = match_key.duplicated(keep=False)
     ambiguous_multi_keys: set = set()
+    pending_options: dict = {}
     rules_norm = normalize_negocio_rules(load_negocio_rules())
     if dup_mask.any():
         tmp = base.assign(_mk=match_key)
@@ -375,51 +376,16 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
                         overrides.pop(mk, None)
                     st.rerun()
 
-            if pending_ambiguous_keys:
-                st.warning(
-                    f"⚠️ {len(pending_ambiguous_keys)} combinación(es) tienen precio distinto según el negocio. "
-                    "La app intentará elegir el precio correcto sola usando el almacén de cada fila del stock y "
-                    "las reglas de '🏷️ Reglas: negocio según almacén'. Si para alguna fila el almacén no encaja "
-                    "en ninguna regla, quedará sin precio para que la edites a mano. También puedes validar aquí "
-                    "un precio fijo para toda la combinación (tiene prioridad sobre las reglas):"
-                )
-                st.dataframe(
-                    conflict_rows[conflict_rows["_mk"].isin(pending_ambiguous_keys)][display_cols],
-                    use_container_width=True, hide_index=True,
-                )
-                pending_pick_rows = []
-                for mk in pending_ambiguous_keys:
-                    sub = conflicts[conflicts["_mk"] == mk]
-                    opciones = " | ".join(f"{r['negocio']}: {r['€/kg']:.4f}" for _, r in sub.iterrows())
-                    pending_pick_rows.append({
-                        "match_key": mk,
-                        "articulo": sub["articulo"].iloc[0],
-                        "lote": sub["lote"].iloc[0],
-                        "opciones (negocio: precio)": opciones,
-                        "€/kg a usar": None,
-                    })
-                pending_pick_df = pd.DataFrame(pending_pick_rows)
-                edited_pick_df = st.data_editor(
-                    pending_pick_df.drop(columns=["match_key"]),
-                    key=f"negocio_resolve_{base_file_id}",
-                    use_container_width=True,
-                    hide_index=True,
-                    disabled=["articulo", "lote", "opciones (negocio: precio)"],
-                    column_config={
-                        "€/kg a usar": st.column_config.NumberColumn("€/kg a usar", format="%.4f", step=0.01, min_value=0.0),
-                    },
-                )
-                if st.button("✅ Validar precios elegidos", key=f"save_negocio_{base_file_id}"):
-                    saved_count = 0
-                    for i, mk in enumerate(pending_pick_df["match_key"]):
-                        price = edited_pick_df.iloc[i]["€/kg a usar"]
-                        if pd.notna(price):
-                            overrides[mk] = float(price)
-                            saved_count += 1
-                    if saved_count:
-                        st.rerun()
-                    else:
-                        st.warning("Escribe al menos un precio en '€/kg a usar' antes de validar.")
+            # El validador manual solo se muestra más adelante para las combinaciones que las reglas
+            # negocio↔almacén NO consigan resolver solas (se decide tras cruzar con el almacén real).
+            pending_options = {}
+            for mk in pending_ambiguous_keys:
+                sub = conflicts[conflicts["_mk"] == mk].drop_duplicates(subset=["negocio_key", "€/kg"])
+                pending_options[mk] = {
+                    "articulo": sub["articulo"].iloc[0],
+                    "lote": sub["lote"].iloc[0],
+                    "opciones": list(zip(sub["negocio"], sub["€/kg"])),
+                }
 
     base["match_key"] = match_key
     base["match_key_item"] = match_key_item
@@ -437,6 +403,7 @@ def prepare_base_dataframe(df: pd.DataFrame, base_file_id: str = "") -> pd.DataF
     result.attrs["uses_almacen"] = uses_almacen
     result.attrs["ambiguous_match_keys"] = ambiguous_multi_keys
     result.attrs["negocio_rules"] = rules_norm
+    result.attrs["pending_options"] = pending_options
     return result
 
 
@@ -542,6 +509,9 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
 
     warehouse["€/kg"] = None
     warehouse["importe"] = None
+    # Combinaciones ambiguas para las que alguna fila del stock no se pudo resolver con las reglas
+    # (almacén sin regla, o con varias reglas encajando): estas siguen necesitando validación manual.
+    still_ambiguous_keys: set = set()
 
     for idx, row in warehouse.iterrows():
         price = None
@@ -552,6 +522,8 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
                 candidates = [p for negocio_key, p in base_multi_options[row["match_key"]] if group_kw in negocio_key]
                 if len(candidates) == 1:
                     price = candidates[0]
+            if price is None:
+                still_ambiguous_keys.add(row["match_key"])
         elif row["match_key"] in base_lookup.index:
             price = base_lookup.loc[row["match_key"], "€/kg"]
         elif row["match_key_item"] in base_no_lote.index:
@@ -565,7 +537,9 @@ def valorate_stock(base_df: pd.DataFrame, warehouse_df: pd.DataFrame) -> pd.Data
 
     warehouse["€/kg"] = pd.to_numeric(warehouse["€/kg"], errors="coerce")
     warehouse["importe"] = pd.to_numeric(warehouse["importe"], errors="coerce")
-    return warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "€/kg", "importe"]]
+    final = warehouse[["almacen", "articulo", "descripcion", "lote", "kg_stock", "€/kg", "importe"]]
+    final.attrs["still_ambiguous_keys"] = still_ambiguous_keys
+    return final
 
 
 def _pdf_safe(text) -> str:
@@ -799,6 +773,49 @@ try:
         base_ready = prepare_base_dataframe(base_df, base_file_id)
         warehouse_ready = prepare_warehouse_dataframe(warehouse_df, warehouse_columns)
         result = valorate_stock(base_ready, warehouse_ready)
+
+    still_ambiguous_keys = result.attrs.get("still_ambiguous_keys", set())
+    pending_options = base_ready.attrs.get("pending_options", {})
+    truly_pending = {mk: opt for mk, opt in pending_options.items() if mk in still_ambiguous_keys}
+    if truly_pending:
+        st.warning(
+            f"⚠️ {len(truly_pending)} combinación(es) con precio distinto según el negocio no se pudieron "
+            "resolver solas (el almacén de alguna fila no coincide con ninguna regla, o coincide con varias). "
+            "Elige el precio a usar para esas filas, o ajusta las reglas de '🏷️ Reglas: negocio según almacén':"
+        )
+        pending_pick_rows = []
+        for mk, opt in truly_pending.items():
+            opciones = " | ".join(f"{n}: {p:.4f}" for n, p in opt["opciones"])
+            pending_pick_rows.append({
+                "match_key": mk,
+                "articulo": opt["articulo"],
+                "lote": opt["lote"],
+                "opciones (negocio: precio)": opciones,
+                "€/kg a usar": None,
+            })
+        pending_pick_df = pd.DataFrame(pending_pick_rows)
+        edited_pick_df = st.data_editor(
+            pending_pick_df.drop(columns=["match_key"]),
+            key=f"negocio_resolve_{base_file_id}",
+            use_container_width=True,
+            hide_index=True,
+            disabled=["articulo", "lote", "opciones (negocio: precio)"],
+            column_config={
+                "€/kg a usar": st.column_config.NumberColumn("€/kg a usar", format="%.4f", step=0.01, min_value=0.0),
+            },
+        )
+        if st.button("✅ Validar precios elegidos", key=f"save_negocio_{base_file_id}"):
+            overrides = st.session_state.setdefault("negocio_price_overrides", {}).setdefault(base_file_id, {})
+            saved_count = 0
+            for i, mk in enumerate(pending_pick_df["match_key"]):
+                price = edited_pick_df.iloc[i]["€/kg a usar"]
+                if pd.notna(price):
+                    overrides[mk] = float(price)
+                    saved_count += 1
+            if saved_count:
+                st.rerun()
+            else:
+                st.warning("Escribe al menos un precio en '€/kg a usar' antes de validar.")
 
     editor_key = f"editor_{getattr(base_path, 'name', str(base_path))}_{getattr(warehouse_path, 'name', str(warehouse_path))}"
 
